@@ -16,24 +16,35 @@ import numpy as np
 
 from sdr_sim import modulation
 
-# Syncword do NGHam usado pelo enlace do FloripaSat.
-NGHAM_SYNCWORD = bytes((0xBA, 0x67, 0x54, 0x7E))
+# Syncword do NGHam, direto da implementacao de referencia:
+#
+#     const uint8_t NGH_SYNC[] = {0x5D, 0xE6, 0x2A, 0x7E};   (ngham.c)
+#
+# NAO 0xBA 0x67 0x54 0x7E, que e o MESMO vetor com os bits de cada byte
+# invertidos. O simulador gerava a versao invertida, e o detector procurava a
+# versao invertida: os dois concordavam entre si e ambos discordavam do
+# satelite. So uma gravacao real do FloripaSat-1 pegou.
+NGHAM_SYNCWORD = bytes((0x5D, 0xE6, 0x2A, 0x7E))
+
+# Preambulo do NGHam. 0xAA, e nao 0x55 -- tambem confirmado na gravacao real,
+# onde os 16 bits antes do primeiro sync sao 1010101010101010.
+NGHAM_PREAMBLE = 0xAA
 
 
 def bytes_to_bits(data: bytes) -> np.ndarray:
-    """MSB primeiro, que é a ordem em que BA 67 54 7E está escrito."""
+    """MSB primeiro, que é a ordem em que o NGH_SYNC do ngham.c está escrito."""
     return np.array([(byte >> (7 - i)) & 1 for byte in data for i in range(8)], dtype=np.uint8)
 
 
 def build_frame(payload: bytes, preamble_bytes: int = 32) -> np.ndarray:
     """Preâmbulo + syncword + payload, como fluxo de bits.
 
-    O preâmbulo é 0x55 — alternado a cada bit. Não é enfeite: é o que dá ao
+    O preâmbulo é 0xAA — alternado a cada bit. Não é enfeite: é o que dá ao
     sincronismo de tempo do receptor transições suficientes para travar ANTES
     de o syncword passar. Sem ele, o Mueller & Muller ainda está convergindo
     quando o syncword chega, e o detector não acha nada.
     """
-    return bytes_to_bits(bytes([0x55] * preamble_bytes) + NGHAM_SYNCWORD + payload)
+    return bytes_to_bits(bytes([NGHAM_PREAMBLE] * preamble_bytes) + NGHAM_SYNCWORD + payload)
 
 
 class PassDoppler:

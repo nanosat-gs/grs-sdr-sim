@@ -133,14 +133,16 @@ def test_frame_traz_preambulo_syncword_e_payload():
 
 
 def test_preambulo_alterna_a_cada_bit():
-    """0x55 = 01010101. É o que dá ao sincronismo de tempo em que travar."""
+    """0xAA = 10101010, como o ngham.c define e como aparece numa gravação
+    real do FloripaSat-1: os 16 bits antes do primeiro sync são
+    1010101010101010."""
     frame = em.build_frame(b"", preamble_bytes=2)
 
-    assert list(frame[:8]) == [0, 1, 0, 1, 0, 1, 0, 1]
+    assert list(frame[:8]) == [1, 0, 1, 0, 1, 0, 1, 0]
 
 
 def test_bits_saem_msb_primeiro():
-    """A ordem em que BA 67 54 7E está escrito."""
+    """A ordem em que o NGH_SYNC do ngham.c está escrito."""
     assert list(em.bytes_to_bits(b"\xBA")) == [1, 0, 1, 1, 1, 0, 1, 0]
 
 
