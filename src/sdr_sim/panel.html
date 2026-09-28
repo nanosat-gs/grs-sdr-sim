@@ -125,6 +125,22 @@
     </div>
 
     <div class="card">
+      <h2>Transmissão do FS-2</h2>
+      <div class="row">
+        <label><input type="radio" name="fs2mode" value="continuous"> contínuo</label>
+        <label><input type="radio" name="fs2mode" value="manual"> manual (um por vez)</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="send-one">Enviar 1 pacote</button>
+        <input type="number" id="send-count" value="10" min="1" max="100" style="width:70px">
+        <button id="send-many">Enviar N</button>
+      </div>
+      <div class="meta" id="tx-status">–</div>
+      <p class="hint">No contínuo sai uma rajada a cada ~0,67 s. No manual o satélite fica calado
+        até você pedir — e a caixa de pacotes mostra se aquele pacote chegou.</p>
+    </div>
+
+    <div class="card">
       <h2>Ruído</h2>
       <div class="row">
         SNR <input type="range" id="snr" min="-10" max="40" step="1">
@@ -164,9 +180,14 @@
       <div id="packets-off" class="meta">Monitor desligado (sem --packets-source).</div>
       <div id="packets-on" hidden>
         <div class="stats">
+          <div><b class="big" id="pk-sent">0</b><span>enviados</span></div>
           <div><b class="big ok" id="pk-ok">0</b><span>corretos</span></div>
           <div><b class="big bad" id="pk-bad">0</b><span>divergentes</span></div>
-          <div><b class="big" id="pk-rate">–</b><span>chegando / esperado</span></div>
+        </div>
+        <div class="stats" style="margin-top:8px">
+          <div><b class="big warn" id="pk-lost">0</b><span>não chegaram</span></div>
+          <div><b class="big" id="pk-transit">0</b><span>a caminho</span></div>
+          <div><b class="big" id="pk-rate">–</b><span>íntegros</span></div>
         </div>
         <div class="row"><button id="pk-reset">Zerar contagem</button>
           <span class="meta" id="pk-rate-detail"></span></div>
@@ -250,7 +271,24 @@ function render(s) {
 
   renderEmitters(s.emitters);
   renderDoppler(s.emitters.find((e) => e.name === "fs2"));
-  renderPackets(s.packets, s.fs2_period_s, s.emitters.find((e) => e.name === "fs2"));
+  renderTransmission(s.transmission, s.emitters.find((e) => e.name === "fs2"));
+  renderPackets(s.packets, s.transmission);
+}
+
+function renderTransmission(tx, fs2) {
+  if (!tx) return;
+  for (const radio of document.querySelectorAll('input[name="fs2mode"]')) {
+    radio.checked = radio.value === tx.mode;
+  }
+  const manual = tx.mode === "manual";
+  $("send-one").disabled = !manual;
+  $("send-many").disabled = !manual;
+  let status = manual
+    ? (tx.pending ? `${tx.pending} na fila para sair` : "calado, esperando pedido")
+    : "transmitindo sem parar";
+  if (fs2 && !fs2.enabled) status += " — ATENÇÃO: FS-2 desligado em Emissores, nada sai no ar";
+  else if (fs2 && !fs2.in_band) status += " — ATENÇÃO: FS-2 fora da banda, o receptor não ouve";
+  $("tx-status").textContent = status;
 }
 
 const EMITTER_INFO = {
@@ -316,28 +354,37 @@ function renderDoppler(fs2) {
   $("dop-bar").style.width = (progress * 100).toFixed(1) + "%";
 }
 
-function renderPackets(p, period, fs2) {
+function renderPackets(p, tx) {
   $("packets-off").hidden = !!p;
   $("packets-on").hidden = !p;
-  if (!p) return;
+  if (!p || !tx) return;
 
+  // "Enviados" conta o que o simulador transmitiu, esteja o FS-2 audível ou
+  // não — se ele estiver desligado ou fora da banda, a perda é real e é isso
+  // que o painel tem de mostrar.
+  // "A caminho" é uma margem conservadora (1,5 s); os que já chegaram
+  // dentro dela saem da conta.
+  const received = p.ok + p.diverge;
+  const arrivedEarly = Math.max(0, received - tx.settled);
+  const lost = Math.max(0, tx.settled - received);
+  $("pk-sent").textContent = tx.sent;
   $("pk-ok").textContent = p.ok;
   $("pk-bad").textContent = p.diverge;
+  $("pk-lost").textContent = lost;
+  $("pk-transit").textContent = Math.max(0, tx.in_flight - arrivedEarly);
 
-  const transmitting = fs2 && fs2.enabled && fs2.in_band;
-  const expected = period && transmitting ? 1 / period : 0;
-  if (expected > 0) {
-    const pct = Math.round(100 * p.rate_per_s / expected);
-    const el = $("pk-rate");
+  const el = $("pk-rate");
+  const denominator = Math.max(tx.settled, received);
+  if (denominator > 0) {
+    const pct = Math.round(100 * p.ok / denominator);
     el.textContent = pct + "%";
-    el.className = "big " + (pct >= 90 ? "ok" : pct >= 50 ? "warn" : "bad");
-    $("pk-rate-detail").textContent =
-      `${p.rate_per_s.toFixed(2)}/s de ${expected.toFixed(2)}/s (últimos 10 s)`;
+    el.className = "big " + (pct >= 95 ? "ok" : pct >= 70 ? "warn" : "bad");
   } else {
-    $("pk-rate").textContent = "–";
-    $("pk-rate").className = "big";
-    $("pk-rate-detail").textContent = "FS-2 desligado ou fora da banda: nada é esperado";
+    el.textContent = "–";
+    el.className = "big";
   }
+  $("pk-rate-detail").textContent =
+    `${p.rate_per_s.toFixed(2)} pacotes/s nos últimos 10 s`;
 
   const body = $("pk-table");
   body.replaceChildren();
@@ -491,6 +538,40 @@ $("dop-start").addEventListener("click", () => control({
 }));
 $("dop-stop").addEventListener("click", () => control({ doppler: { max_shift_hz: 0 } }));
 $("pk-reset").addEventListener("click", () => control({ reset_packets: true }));
+
+// Ao passar para manual, a rajada em curso termina de sair (cortá-la seria
+// transmitir um pacote truncado) e chega ao detector ~1 s depois. Zerar na
+// hora contaria esse pacote como "correto" sem nenhum envio — então o zerar
+// espera ele chegar, e é cancelado se você enviar antes disso.
+let pendingReset = null;
+function cancelPendingReset() {
+  if (pendingReset !== null) { clearTimeout(pendingReset); pendingReset = null; }
+}
+for (const radio of document.querySelectorAll('input[name="fs2mode"]')) {
+  radio.addEventListener("change", () => {
+    cancelPendingReset();
+    if (radio.value === "manual") {
+      control({ fs2_mode: "manual" });
+      pendingReset = setTimeout(() => { pendingReset = null; control({ reset_packets: true }); }, 2000);
+    } else {
+      control({ fs2_mode: "continuous", reset_packets: true });
+    }
+  });
+}
+$("send-one").addEventListener("click", () => {
+  const reset = pendingReset !== null;
+  cancelPendingReset();
+  control(reset ? { send_packets: 1, reset_packets: true } : { send_packets: 1 });
+});
+$("send-many").addEventListener("click", () => {
+  const count = Math.round(Number($("send-count").value));
+  if (count < 1) return;
+  const reset = pendingReset !== null;
+  cancelPendingReset();
+  const changes = { send_packets: Math.min(count, 100) };
+  if (reset) changes.reset_packets = true;
+  control(changes);
+});
 
 pollState();
 pollSpectrum();

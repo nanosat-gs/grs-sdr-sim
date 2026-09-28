@@ -178,6 +178,7 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
 
     for emitter in signals:
         emitter.enabled = emitter.name in args.emitters
+    signals[0].continuous = args.fs2_mode == "continuous"
 
     if not args.emitters:
         print("[sdr-sim] AVISO: nenhum emissor ligado — só ruído sairá.", flush=True)
@@ -221,6 +222,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--payload-bytes", type=int, default=64)
     parser.add_argument("--burst-gap", type=float, default=0.5,
                         help="Silêncio entre rajadas, em segundos")
+    parser.add_argument("--fs2-mode", choices=["continuous", "manual"], default="continuous",
+                        help="continuous: rajadas sem parar. manual: silêncio até o painel "
+                             "pedir um pacote (POST /api/control {\"send_packets\": 1}).")
 
     parser.add_argument("--snr-db", type=snr_value, default=20.0,
                         help="Relação sinal-ruído em dB. Use 'none' para sinal limpo.")

@@ -52,13 +52,16 @@ simulador rodando, sem reiniciar:
 - **SNR**, ou sinal sem ruído;
 - **emissores** ligados/desligados e amplitude — os três existem sempre;
   `--emitters` só diz quais começam ligados;
-- **Doppler** do FS-2: inicia uma passagem simulada a partir de agora.
+- **Doppler** do FS-2: inicia uma passagem simulada a partir de agora;
+- **transmissão do FS-2**: contínua (uma rajada a cada ~0,67 s) ou
+  **manual** — calado até você pedir "enviar 1 pacote" (ou N). Também na
+  partida: `--fs2-mode manual`.
 
 Com `--packets-source tcp://grs-syncword-detector:5558`, o painel também
 assina a saída do detector e **confere cada pacote contra o payload que o
-simulador transmitiu** — os 64 bytes, não só o começo — e mostra a taxa de
-chegada contra a esperada. É a malha fechada: baixe o SNR e veja, no mesmo
-lugar, quantos pacotes deixam de chegar.
+simulador transmitiu** — os 64 bytes, não só o começo — e mostra enviados,
+corretos, divergentes e os que não chegaram. É a malha fechada: baixe o SNR,
+ou envie um pacote só, e veja no mesmo lugar o que aconteceu com ele.
 
 O painel usa só a biblioteca padrão (`http.server`); as rotas são
 `GET /api/state`, `GET /api/spectrum` e `POST /api/control`. Não tem

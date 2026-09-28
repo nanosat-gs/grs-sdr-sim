@@ -76,10 +76,15 @@ investigável.
   `threading.Thread` usa esse nome para um Event interno; sobrescrevê-lo
   quebra o `.start()`. Aconteceu no `PacketMonitor` e só a execução no compose
   pegou — daí o teste que inicia a thread de verdade.
-- **O que o painel mediu, e é problema do demodulador, não do simulador:**
-  mesmo sem ruído, ~8% dos pacotes chegam com payload divergente e ~7% das
-  rajadas nem são detectadas; com 20 dB, ~25% divergem. É a deriva de
-  sincronismo de tempo registrada em `docs/rx-datapath.md` do `grs-station`.
+- **Os símbolos do simulador começam alinhados na amostra 0; os de um
+  satélite, não.** Um sincronismo de tempo que não rastreia nada passa em
+  qualquer teste feito só com este simulador. Foi assim que o ganho errado
+  do M&M do `grs-demodulator` sobreviveu; a `tools/bancada_demod.py` do
+  `grs-station` atrasa o sinal (`--offset`) por causa disso.
+- **No modo manual, a rajada em curso termina antes de calar.** Cortá-la ao
+  meio transmitiria um pacote truncado, contado como enviado e perdido sem
+  culpa do cano. Por isso o painel espera ~2 s para zerar a contagem depois
+  de trocar para manual.
 - **O que ele NÃO simula:** ganho de antena, figura de ruído, interferência de
   banda adjacente, multipercurso, e o assentamento do PLL depois de um retune.
   O Doppler é um MODELO (curva em S), não propagação orbital — quem calcula

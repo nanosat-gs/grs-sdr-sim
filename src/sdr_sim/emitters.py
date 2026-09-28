@@ -100,6 +100,13 @@ class Emitter:
     # Desligado é tratado como fora da banda: não é ouvido, mas continua
     # consumindo a forma de onda, para a cadência não congelar.
     enabled: bool = True
+    # Contínuo: repete a forma de onda para sempre. Manual: silêncio até
+    # `trigger()`, e então um ciclo (quadro + silêncio) por pedido.
+    continuous: bool = True
+    # Ciclos iniciados desde a partida. Para uma rajada, é quantos pacotes
+    # foram de fato transmitidos — o denominador honesto de "quantos chegaram".
+    bursts_sent: int = field(default=0, repr=False)
+    _pending: int = field(default=0, repr=False)
 
     # Posição corrente no ciclo e fase acumulada do deslocamento em frequência.
     # A fase PRECISA atravessar blocos: reiniciá-la a cada bloco criaria um
@@ -114,12 +121,36 @@ class Emitter:
             raise ValueError(f"emissor {self.name} sem forma de onda")
         self.waveform = self.waveform.astype(np.complex64)
 
+    @property
+    def pending(self) -> int:
+        return self._pending
+
+    def trigger(self, count: int = 1) -> None:
+        """Enfileira `count` ciclos no modo manual."""
+        if count <= 0:
+            raise ValueError("count precisa ser positivo")
+        self._pending += count
+
     def take(self, n: int) -> np.ndarray:
-        """Próximas `n` amostras da forma de onda, ciclando."""
-        out = np.empty(n, dtype=np.complex64)
+        """Próximas `n` amostras da forma de onda.
+
+        Um ciclo começado sempre vai até o fim, mesmo que o modo mude no
+        meio: cortar uma rajada ao meio transmitiria um pacote truncado, e
+        ele seria contado como enviado e perdido sem que o cano tivesse culpa.
+        """
+        out = np.zeros(n, dtype=np.complex64)
         filled = 0
 
         while filled < n:
+            if self._cursor == 0:
+                if self.continuous:
+                    self.bursts_sent += 1
+                elif self._pending > 0:
+                    self._pending -= 1
+                    self.bursts_sent += 1
+                else:
+                    break  # manual e nada pedido: o resto do bloco é silêncio
+
             chunk = min(n - filled, len(self.waveform) - self._cursor)
             out[filled : filled + chunk] = self.waveform[self._cursor : self._cursor + chunk]
             filled += chunk

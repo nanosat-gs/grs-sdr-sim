@@ -162,6 +162,106 @@ def test_periodo_do_fs2_e_quadro_mais_silencio():
     assert controller.fs2_period_s() == pytest.approx(800 / 4800 + 0.5, abs=1e-3)
 
 
+# --- modo manual: um pacote por pedido ----------------------------------------
+
+
+def manual_fs2():
+    fs2 = em.fs2_beacon(CENTER, SAMPLE_RATE, 4800, bytes(range(64)), gap_s=0.5)
+    fs2.continuous = False
+    return fs2
+
+
+def test_manual_fica_calado_ate_o_pedido():
+    fs2 = manual_fs2()
+
+    assert power(fs2.take(50_000)) == 0.0
+    assert fs2.bursts_sent == 0
+
+
+def test_um_pedido_transmite_exatamente_um_ciclo():
+    fs2 = manual_fs2()
+    period = len(fs2.waveform)
+    fs2.trigger(1)
+
+    first = fs2.take(period)
+    after = fs2.take(3 * period)
+
+    assert np.array_equal(first, fs2.waveform)
+    assert power(after) == 0.0
+    assert fs2.bursts_sent == 1
+
+
+def test_n_pedidos_saem_em_sequencia_com_o_silencio_entre_eles():
+    fs2 = manual_fs2()
+    period = len(fs2.waveform)
+    fs2.trigger(3)
+
+    out = fs2.take(4 * period)
+
+    assert fs2.bursts_sent == 3
+    assert np.array_equal(out[: 3 * period], np.tile(fs2.waveform, 3))
+    assert power(out[3 * period :]) == 0.0
+
+
+def test_trocar_para_manual_no_meio_da_rajada_nao_a_corta():
+    """Cortar ao meio transmitiria um pacote truncado — contado como enviado e
+    perdido sem culpa do cano."""
+    fs2 = em.fs2_beacon(CENTER, SAMPLE_RATE, 4800, bytes(range(64)), gap_s=0.5)
+    period = len(fs2.waveform)
+    head = fs2.take(1000)
+    fs2.continuous = False
+
+    rest = fs2.take(2 * period)
+
+    assert np.array_equal(np.concatenate((head, rest[: period - 1000])), fs2.waveform)
+    assert power(rest[period:]) == 0.0
+    assert fs2.bursts_sent == 1
+
+
+def test_send_packets_pelo_controlador_conta_enviados_e_em_transito():
+    fs2 = manual_fs2()
+    controller = SimController(VirtualSpectrum(CENTER, SAMPLE_RATE, [fs2], snr_db=None), 8192)
+
+    controller.apply({"send_packets": 2})
+    controller.next_block()
+    tx = controller.state()["transmission"]
+    assert (tx["mode"], tx["sent"], tx["in_flight"], tx["settled"]) == ("manual", 1, 1, 0)
+
+    for _ in range(80):  # ~2,7 s: as duas rajadas saem e passam do trânsito
+        controller.next_block()
+    tx = controller.state()["transmission"]
+    assert (tx["sent"], tx["in_flight"], tx["settled"], tx["pending"]) == (2, 0, 2, 0)
+
+    controller.apply({"reset_packets": True})
+    assert controller.state()["transmission"]["sent"] == 0
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"send_packets": 1}, "modo manual"),                        # começa contínuo
+    ({"fs2_mode": "manual", "send_packets": True}, "inteiro"),
+    ({"fs2_mode": "manual", "send_packets": 0}, "fora"),
+    ({"fs2_mode": "manual", "send_packets": 101}, "fora"),
+    ({"fs2_mode": "rajada"}, "continuous"),
+])
+def test_pedidos_de_envio_invalidos_sao_recusados(changes, message):
+    fs2 = em.fs2_beacon(CENTER, SAMPLE_RATE, 4800, bytes(range(8)))
+    controller = SimController(VirtualSpectrum(CENTER, SAMPLE_RATE, [fs2]), 8192)
+
+    with pytest.raises(ValueError, match=message):
+        controller.apply(changes)
+
+    assert fs2.continuous is True and fs2.pending == 0
+
+
+def test_manual_e_envio_no_mesmo_pedido():
+    fs2 = em.fs2_beacon(CENTER, SAMPLE_RATE, 4800, bytes(range(8)))
+    controller = SimController(VirtualSpectrum(CENTER, SAMPLE_RATE, [fs2]), 8192)
+
+    controller.apply({"fs2_mode": "manual", "send_packets": 5})
+
+    assert fs2.continuous is False and fs2.pending == 5
+
+
 # --- partida: --emitters decide o que começa ligado ------------------------------
 
 
@@ -170,6 +270,13 @@ def test_os_tres_emissores_existem_e_so_os_pedidos_comecam_ligados():
 
     state = {e.name: e.enabled for e in spectrum.emitters}
     assert state == {"fs2": True, "fm": False, "carrier": True}
+
+
+def test_fs2_mode_manual_na_partida():
+    spectrum = main_build_spectrum(parse_args(["--fs2-mode", "manual"]))
+
+    fs2 = next(e for e in spectrum.emitters if e.name == "fs2")
+    assert fs2.continuous is False
 
 
 # --- monitor de pacotes --------------------------------------------------------

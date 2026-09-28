@@ -25,6 +25,13 @@ SPECTRUM_BINS = 1024
 SNR_RANGE_DB = (-20.0, 60.0)
 AMPLITUDE_RANGE = (0.0, 2.0)
 DOPPLER_MAX_HZ = 50_000.0
+MAX_PACKETS_PER_REQUEST = 100
+
+# Quanto tempo depois de começar a sair uma rajada ela pode ainda não ter
+# chegado ao detector: a rajada (~0,17 s) + a janela do demodulador (0,5 s) +
+# folga. Pacotes mais novos que isto não entram na conta de "perdidos" — senão
+# o painel mostraria perda permanente só por causa do trânsito.
+IN_FLIGHT_S = 1.5
 
 
 class SimController:
@@ -38,16 +45,55 @@ class SimController:
         self.tune_source: str | None = None
         self.packets = None  # PacketMonitor, quando houver
         self._last_block: np.ndarray | None = None
+        # Instante simulado em que cada rajada do FS-2 começou a sair, e a
+        # contagem de enviados no último "zerar".
+        self._burst_starts: list[float] = []
+        self._sent_baseline = 0
 
     # --- laço de geração -----------------------------------------------------
 
     def next_block(self) -> np.ndarray:
         with self.lock:
+            fs2 = self._fs2()
+            before = fs2.bursts_sent if fs2 else 0
+            started_at = self.spectrum.elapsed_s
+
             block = self.spectrum.block(self.block_samples)
             self._last_block = block
             self.blocks += 1
 
+            if fs2:
+                self._burst_starts.extend([started_at] * (fs2.bursts_sent - before))
+                # Só o trânsito recente importa; o resto é contagem.
+                horizon = self.spectrum.elapsed_s - IN_FLIGHT_S
+                while self._burst_starts and self._burst_starts[0] < horizon:
+                    self._burst_starts.pop(0)
+
         return block
+
+    def _fs2(self):
+        try:
+            return self.emitter("fs2")
+        except ValueError:
+            return None
+
+    def _transmission(self) -> dict[str, Any] | None:
+        """Enviados desde o último zerar, separando os que ainda podem estar
+        a caminho. Chamado com a trava segura."""
+        fs2 = self._fs2()
+        if fs2 is None:
+            return None
+
+        sent = fs2.bursts_sent - self._sent_baseline
+        in_flight = min(len(self._burst_starts), sent)
+
+        return {
+            "mode": "continuous" if fs2.continuous else "manual",
+            "pending": fs2.pending,
+            "sent": sent,
+            "settled": sent - in_flight,
+            "in_flight": in_flight,
+        }
 
     # --- leitura -------------------------------------------------------------
 
@@ -107,6 +153,7 @@ class SimController:
                 "retunes": spectrum.retune_count,
                 "tune_source": self.tune_source,
                 "emitters": emitters,
+                "transmission": self._transmission(),
             }
 
         period = self.fs2_period_s()
@@ -150,14 +197,46 @@ class SimController:
         if not isinstance(changes, dict):
             raise ValueError("esperava um objeto JSON")
 
-        unknown = set(changes) - {"tune_hz", "snr_db", "emitters", "doppler", "reset_packets"}
+        unknown = set(changes) - {
+            "tune_hz", "snr_db", "emitters", "doppler", "reset_packets",
+            "fs2_mode", "send_packets",
+        }
         if unknown:
             raise ValueError(f"campo desconhecido: {', '.join(sorted(unknown))}")
 
         actions = []
 
-        if changes.get("reset_packets") is True and self.packets is not None:
-            actions.append(self.packets.reset)
+        if changes.get("reset_packets") is True:
+            def reset_counts():
+                fs2 = self._fs2()
+                self._sent_baseline = fs2.bursts_sent if fs2 else 0
+                self._burst_starts.clear()
+                if self.packets is not None:
+                    self.packets.reset()
+
+            actions.append(reset_counts)
+
+        if "fs2_mode" in changes or "send_packets" in changes:
+            fs2 = self.emitter("fs2")
+            mode = changes.get("fs2_mode", "continuous" if fs2.continuous else "manual")
+            if mode not in ("continuous", "manual"):
+                raise ValueError("fs2_mode precisa ser 'continuous' ou 'manual'")
+            actions.append(_setter(fs2, "continuous", mode == "continuous"))
+
+            if "send_packets" in changes:
+                count = changes["send_packets"]
+                if isinstance(count, bool) or not isinstance(count, int):
+                    raise ValueError("send_packets precisa ser um inteiro")
+                if not 1 <= count <= MAX_PACKETS_PER_REQUEST:
+                    raise ValueError(
+                        f"send_packets fora de [1, {MAX_PACKETS_PER_REQUEST}]"
+                    )
+                if mode != "manual":
+                    raise ValueError(
+                        "send_packets só vale no modo manual — no contínuo o FS-2 "
+                        "já transmite sem parar"
+                    )
+                actions.append(lambda: fs2.trigger(count))
 
         if "tune_hz" in changes:
             tune_hz = _number(changes["tune_hz"], "tune_hz")
