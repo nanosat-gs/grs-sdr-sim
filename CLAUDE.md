@@ -19,6 +19,10 @@ sai do centro; muito longe e some.
 modulation.py   formas de onda, escritas da definição (2GFSK, FM)
 emitters.py     o que está no ar: frequência absoluta, forma de onda, Doppler
 spectrum.py     soma os emissores na banda-base do receptor; sintonia e ruído
+control.py      SimController: estado mutável sob UMA trava (laço, tune, painel)
+panel.py        painel web (http.server): GET /api/state, /api/spectrum, POST /api/control
+panel.html      a página do painel, servida de dentro do pacote
+packets.py      assina :5558 e confere o payload contra o que foi transmitido
 main.py         serviço: PUB :5556, SUB :5557 tune, ritmo de tempo real
 ```
 
@@ -61,6 +65,21 @@ investigável.
 - **PUB descarta o que publica sem assinante conectado.** Por isso o serviço
   espera um segundo antes de transmitir. Sem isso as primeiras mensagens somem
   e alguém procura o defeito no demodulador.
+- **Toda mudança em execução passa pela trava do `SimController`.** O laço de
+  geração a segura durante `spectrum.block()`; tune e painel também. Sem ela,
+  um retune no meio do bloco dá metade das amostras numa sintonia e metade
+  noutra — o demodulador lê símbolo errado e ninguém reproduz depois.
+- **`SimController.apply` é tudo-ou-nada.** Valida o pedido inteiro antes de
+  mudar qualquer coisa: um campo inválido não pode deixar o simulador meio
+  alterado enquanto o painel sugere que nada mudou.
+- **Não nomeie atributo de subclasse de `Thread` como `_started`.** O
+  `threading.Thread` usa esse nome para um Event interno; sobrescrevê-lo
+  quebra o `.start()`. Aconteceu no `PacketMonitor` e só a execução no compose
+  pegou — daí o teste que inicia a thread de verdade.
+- **O que o painel mediu, e é problema do demodulador, não do simulador:**
+  mesmo sem ruído, ~8% dos pacotes chegam com payload divergente e ~7% das
+  rajadas nem são detectadas; com 20 dB, ~25% divergem. É a deriva de
+  sincronismo de tempo registrada em `docs/rx-datapath.md` do `grs-station`.
 - **O que ele NÃO simula:** ganho de antena, figura de ruído, interferência de
   banda adjacente, multipercurso, e o assentamento do PLL depois de um retune.
   O Doppler é um MODELO (curva em S), não propagação orbital — quem calcula

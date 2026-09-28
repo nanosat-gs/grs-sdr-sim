@@ -77,6 +77,8 @@ class VirtualSpectrum:
         out = []
 
         for emitter in self.emitters:
+            if not emitter.enabled:
+                continue
             offset = emitter.offset_from(self.center_frequency_hz, self.elapsed_s)
             if abs(offset) <= half_band:
                 out.append((emitter, offset))
@@ -130,11 +132,15 @@ class VirtualSpectrum:
 
         for emitter in self.emitters:
             offset = emitter.offset_from(self.center_frequency_hz, self.elapsed_s)
-            audible = abs(offset) <= half_band
+            if not emitter.enabled:
+                status = "desligado"
+            elif abs(offset) <= half_band:
+                status = "na banda"
+            else:
+                status = "FORA DA BANDA"
             lines.append(
                 f"  {emitter.name:<10} {emitter.frequency_hz / 1e6:12.4f} MHz  "
-                f"offset {offset / 1e3:+9.2f} kHz  "
-                f"{'na banda' if audible else 'FORA DA BANDA'}"
+                f"offset {offset / 1e3:+9.2f} kHz  {status}"
             )
 
         return lines

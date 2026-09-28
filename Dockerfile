@@ -16,6 +16,8 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 5556
+# Painel web de controle — só se o comando passar --panel-port.
+EXPOSE 8090
 
 # Sem argumentos, transmite o FS-2 sintético em sintonia fixa. O cenário real
 # vem do `command:` do compose.

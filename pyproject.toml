@@ -26,3 +26,8 @@ pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# O painel é um .html servido de dentro do pacote; sem isto o setuptools só
+# empacota .py e a página some na instalação não-editável.
+[tool.setuptools.package-data]
+sdr_sim = ["panel.html"]

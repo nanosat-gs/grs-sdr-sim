@@ -40,6 +40,30 @@ python -m sdr_sim.main --emitters fs2,fm,carrier --doppler-hz 3500 \
 python -m sdr_sim.main --tune-source tcp://grs-frequency-synthesizer:5557
 ```
 
+## Painel de controle
+
+Com `--panel-port 8090`, o simulador serve um painel web (no compose:
+<http://localhost:8090>, publicado só em 127.0.0.1). Tudo muda com o
+simulador rodando, sem reiniciar:
+
+- **espectro e cascata ao vivo** do que sai na :5556, com a posição esperada
+  de cada emissor marcada;
+- **sintonia** do receptor virtual (valor exato ou passos de ±1/±10 kHz);
+- **SNR**, ou sinal sem ruído;
+- **emissores** ligados/desligados e amplitude — os três existem sempre;
+  `--emitters` só diz quais começam ligados;
+- **Doppler** do FS-2: inicia uma passagem simulada a partir de agora.
+
+Com `--packets-source tcp://grs-syncword-detector:5558`, o painel também
+assina a saída do detector e **confere cada pacote contra o payload que o
+simulador transmitiu** — os 64 bytes, não só o começo — e mostra a taxa de
+chegada contra a esperada. É a malha fechada: baixe o SNR e veja, no mesmo
+lugar, quantos pacotes deixam de chegar.
+
+O painel usa só a biblioteca padrão (`http.server`); as rotas são
+`GET /api/state`, `GET /api/spectrum` e `POST /api/control`. Não tem
+autenticação: é ferramenta de bancada.
+
 Emissores disponíveis:
 
 | Nome | O que é | Para quê |

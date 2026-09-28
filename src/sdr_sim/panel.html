@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRS SDR Sim</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2330;
+    --line: #2a3342;
+    --text: #e6edf3;
+    --muted: #8b98a9;
+    --accent: #4cc2ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  .chip {
+    font: 12px var(--mono); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 10px;
+  }
+  .chip b { color: var(--text); font-weight: 500; }
+  .chip.bad { color: var(--bad); border-color: var(--bad); }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 16px; padding: 16px;
+  }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px; margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+  canvas { display: block; width: 100%; background: #05080c; border-radius: 4px; }
+  #spectrum { height: 260px; }
+  #waterfall { height: 220px; margin-top: 8px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  .big { font: 600 22px var(--mono); }
+  input[type=number], input[type=text] {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 8px; font: 13px var(--mono); width: 130px;
+  }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 10px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #001018; border-color: var(--accent); font-weight: 600; }
+  .emitter { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  .emitter:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .emitter-head { display: flex; align-items: center; gap: 8px; }
+  .emitter-name { font: 600 13px var(--mono); min-width: 60px; }
+  .badge { font: 11px var(--mono); padding: 1px 6px; border-radius: 3px; margin-left: auto; }
+  .badge.in { background: #12361f; color: var(--ok); }
+  .badge.out { background: #3a2a0c; color: var(--warn); }
+  .badge.off { background: var(--panel-2); color: var(--muted); }
+  .meta { font: 12px var(--mono); color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .stats div span { display: block; font-size: 11px; color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font: 12px var(--mono); margin-top: 10px; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; }
+  #error { color: var(--bad); font-size: 12px; min-height: 1em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GRS SDR Sim</h1>
+  <span class="chip" id="chip-conn">conectando…</span>
+  <span class="chip">tempo simulado <b id="chip-elapsed">–</b></span>
+  <span class="chip">blocos <b id="chip-blocks">–</b></span>
+  <span class="chip">retunes <b id="chip-retunes">–</b></span>
+  <span class="chip" id="chip-tune">–</span>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Espectro e cascata — o que o receptor virtual está entregando na :5556</h2>
+      <canvas id="spectrum"></canvas>
+      <canvas id="waterfall"></canvas>
+      <p class="hint">Eixo horizontal: deslocamento em relação à sintonia (centro = 0). As linhas
+        tracejadas marcam onde cada emissor ligado deveria estar. Na cascata, o tempo corre para
+        baixo: as rajadas do FS-2 aparecem como traços, e o Doppler como uma curva.</p>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h2>Sintonia do receptor</h2>
+      <div class="big" id="tune-display">–</div>
+      <div class="row">
+        <input type="number" id="tune-input" step="0.0001"> MHz
+        <button class="primary" id="tune-apply">Sintonizar</button>
+      </div>
+      <div class="row">
+        <button data-step="-10000">−10 kHz</button>
+        <button data-step="-1000">−1 kHz</button>
+        <button data-step="1000">+1 kHz</button>
+        <button data-step="10000">+10 kHz</button>
+        <button id="tune-fs2">No FS-2</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Ruído</h2>
+      <div class="row">
+        SNR <input type="range" id="snr" min="-10" max="40" step="1">
+        <span class="big" id="snr-value" style="font-size:16px;min-width:64px;text-align:right">–</span>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="snr-clean"> sem ruído</label>
+      </div>
+      <p class="hint">Abaixe o SNR e acompanhe a caixa de pacotes: é aqui que o cano começa a perder.</p>
+    </div>
+
+    <div class="card">
+      <h2>Emissores no ar</h2>
+      <div id="emitters"></div>
+    </div>
+
+    <div class="card">
+      <h2>Doppler do FS-2 (passagem simulada)</h2>
+      <div class="row">
+        pico <input type="number" id="dop-max" value="3500" step="100"> Hz
+      </div>
+      <div class="row">
+        duração <input type="number" id="dop-dur" value="120" step="10"> s
+      </div>
+      <div class="row">
+        <button class="primary" id="dop-start">Iniciar passagem</button>
+        <button id="dop-stop">Desligar</button>
+      </div>
+      <div class="meta" id="dop-status">Doppler desligado</div>
+      <div class="bar"><div id="dop-bar"></div></div>
+      <p class="hint">Um LEO em VHF desvia ~3,5 kHz. Sem --tune-source, o receptor não acompanha: o
+        sinal escorrega pelo espectro.</p>
+    </div>
+
+    <div class="card">
+      <h2>Pacotes na saída do detector (:5558)</h2>
+      <div id="packets-off" class="meta">Monitor desligado (sem --packets-source).</div>
+      <div id="packets-on" hidden>
+        <div class="stats">
+          <div><b class="big ok" id="pk-ok">0</b><span>corretos</span></div>
+          <div><b class="big bad" id="pk-bad">0</b><span>divergentes</span></div>
+          <div><b class="big" id="pk-rate">–</b><span>chegando / esperado</span></div>
+        </div>
+        <div class="row"><button id="pk-reset">Zerar contagem</button>
+          <span class="meta" id="pk-rate-detail"></span></div>
+        <table>
+          <thead><tr><th>seq</th><th>bit_offset</th><th>início</th><th>há</th><th></th></tr></thead>
+          <tbody id="pk-table"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="error"></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+let state = null;
+
+// --- comunicação ------------------------------------------------------------
+
+async function control(changes) {
+  $("error").textContent = "";
+  try {
+    const response = await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    const body = await response.json();
+    if (!response.ok) { $("error").textContent = body.error || "erro"; return; }
+    render(body);
+  } catch (error) {
+    $("error").textContent = "sem conexão com o simulador";
+  }
+}
+
+async function pollState() {
+  try {
+    const response = await fetch("/api/state");
+    render(await response.json());
+    $("chip-conn").textContent = "conectado";
+    $("chip-conn").classList.remove("bad");
+  } catch (error) {
+    $("chip-conn").textContent = "sem conexão";
+    $("chip-conn").classList.add("bad");
+  }
+  setTimeout(pollState, 500);
+}
+
+async function pollSpectrum() {
+  try {
+    const response = await fetch("/api/spectrum");
+    const db = await response.json();
+    if (db.length) { drawSpectrum(db); drawWaterfall(db); }
+  } catch (error) { /* o pollState já mostra a queda */ }
+  setTimeout(pollSpectrum, 100);
+}
+
+// --- estado -> tela ---------------------------------------------------------
+
+function mhz(hz) { return (hz / 1e6).toFixed(4); }
+function khz(hz) { return (hz >= 0 ? "+" : "") + (hz / 1e3).toFixed(2) + " kHz"; }
+function editing(el) { return document.activeElement === el; }
+
+function render(s) {
+  state = s;
+  $("chip-elapsed").textContent = s.elapsed_s.toFixed(1) + " s";
+  $("chip-blocks").textContent = s.blocks;
+  $("chip-retunes").textContent = s.retunes;
+  $("chip-tune").textContent = s.tune_source ? "tune de " + s.tune_source : "sintonia manual (sem --tune-source)";
+
+  $("tune-display").textContent = mhz(s.center_frequency_hz) + " MHz";
+  if (!editing($("tune-input"))) $("tune-input").value = mhz(s.center_frequency_hz);
+
+  const clean = s.snr_db === null;
+  $("snr-clean").checked = clean;
+  $("snr").disabled = clean;
+  if (!editing($("snr")) && !clean) $("snr").value = s.snr_db;
+  $("snr-value").textContent = clean ? "limpo" : s.snr_db.toFixed(0) + " dB";
+
+  renderEmitters(s.emitters);
+  renderDoppler(s.emitters.find((e) => e.name === "fs2"));
+  renderPackets(s.packets, s.fs2_period_s, s.emitters.find((e) => e.name === "fs2"));
+}
+
+const EMITTER_INFO = {
+  fs2: "rajadas 2GFSK NGHam — o que o cano decodifica",
+  fm: "portadora FM com melodia",
+  carrier: "portadora pura — referência de sintonia",
+};
+
+function renderEmitters(emitters) {
+  const box = $("emitters");
+  if (box.childElementCount !== emitters.length) {
+    box.replaceChildren();
+    for (const e of emitters) {
+      const div = document.createElement("div");
+      div.className = "emitter";
+      div.dataset.name = e.name;
+      div.innerHTML = `
+        <div class="emitter-head">
+          <input type="checkbox" class="en">
+          <span class="emitter-name"></span>
+          <span class="badge"></span>
+        </div>
+        <div class="meta info"></div>
+        <div class="meta where"></div>
+        <div class="row">amplitude <input type="range" class="amp" min="0" max="2" step="0.05">
+          <span class="meta ampv"></span></div>`;
+      div.querySelector(".emitter-name").textContent = e.name;
+      div.querySelector(".info").textContent = EMITTER_INFO[e.name] || "";
+      div.querySelector(".en").addEventListener("change", (ev) =>
+        control({ emitters: { [e.name]: { enabled: ev.target.checked } } }));
+      div.querySelector(".amp").addEventListener("change", (ev) =>
+        control({ emitters: { [e.name]: { amplitude: Number(ev.target.value) } } }));
+      box.appendChild(div);
+    }
+  }
+  for (const e of emitters) {
+    const div = box.querySelector(`[data-name="${e.name}"]`);
+    div.querySelector(".en").checked = e.enabled;
+    const amp = div.querySelector(".amp");
+    if (!editing(amp)) amp.value = e.amplitude;
+    div.querySelector(".ampv").textContent = e.amplitude.toFixed(2);
+    div.querySelector(".where").textContent =
+      mhz(e.frequency_hz) + " MHz · offset " + khz(e.offset_hz);
+    const badge = div.querySelector(".badge");
+    if (!e.enabled) { badge.textContent = "desligado"; badge.className = "badge off"; }
+    else if (e.in_band) { badge.textContent = "na banda"; badge.className = "badge in"; }
+    else { badge.textContent = "fora da banda"; badge.className = "badge out"; }
+  }
+}
+
+function renderDoppler(fs2) {
+  if (!fs2 || !fs2.doppler) {
+    $("dop-status").textContent = "Doppler desligado";
+    $("dop-bar").style.width = "0";
+    return;
+  }
+  const d = fs2.doppler;
+  const progress = Math.max(0, Math.min(1, d.progress_s / d.pass_duration_s));
+  const phase = d.progress_s > d.pass_duration_s ? " (passagem terminada)" : "";
+  $("dop-status").textContent =
+    `desvio agora ${d.shift_hz >= 0 ? "+" : ""}${d.shift_hz.toFixed(0)} Hz · ` +
+    `${d.progress_s.toFixed(0)} de ${d.pass_duration_s.toFixed(0)} s${phase}`;
+  $("dop-bar").style.width = (progress * 100).toFixed(1) + "%";
+}
+
+function renderPackets(p, period, fs2) {
+  $("packets-off").hidden = !!p;
+  $("packets-on").hidden = !p;
+  if (!p) return;
+
+  $("pk-ok").textContent = p.ok;
+  $("pk-bad").textContent = p.diverge;
+
+  const transmitting = fs2 && fs2.enabled && fs2.in_band;
+  const expected = period && transmitting ? 1 / period : 0;
+  if (expected > 0) {
+    const pct = Math.round(100 * p.rate_per_s / expected);
+    const el = $("pk-rate");
+    el.textContent = pct + "%";
+    el.className = "big " + (pct >= 90 ? "ok" : pct >= 50 ? "warn" : "bad");
+    $("pk-rate-detail").textContent =
+      `${p.rate_per_s.toFixed(2)}/s de ${expected.toFixed(2)}/s (últimos 10 s)`;
+  } else {
+    $("pk-rate").textContent = "–";
+    $("pk-rate").className = "big";
+    $("pk-rate-detail").textContent = "FS-2 desligado ou fora da banda: nada é esperado";
+  }
+
+  const body = $("pk-table");
+  body.replaceChildren();
+  for (const pk of p.recent) {
+    const tr = document.createElement("tr");
+    for (const text of [pk.seq, pk.bit_offset, pk.prefix, pk.age_s + " s"]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    const status = document.createElement("td");
+    status.textContent = pk.ok ? "ok" : "DIVERGE";
+    status.className = pk.ok ? "ok" : "bad";
+    tr.appendChild(status);
+    body.appendChild(tr);
+  }
+}
+
+// --- desenho ----------------------------------------------------------------
+
+const spectrumCanvas = $("spectrum");
+const waterfallCanvas = $("waterfall");
+let smoothed = null;
+let floorDb = null;
+
+function fitCanvas(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * ratio);
+  const h = Math.round(canvas.clientHeight * ratio);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; return true; }
+  return false;
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function drawSpectrum(db) {
+  fitCanvas(spectrumCanvas);
+  const ctx = spectrumCanvas.getContext("2d");
+  const W = spectrumCanvas.width, H = spectrumCanvas.height;
+  const ratio = window.devicePixelRatio || 1;
+
+  if (!smoothed || smoothed.length !== db.length) smoothed = db.slice();
+  for (let i = 0; i < db.length; i++) smoothed[i] = 0.6 * smoothed[i] + 0.4 * db[i];
+
+  const floor = median(smoothed);
+  floorDb = floorDb === null ? floor : 0.9 * floorDb + 0.1 * floor;
+  const top = floorDb + 60, bottom = floorDb - 10;
+  const y = (v) => H - ((v - bottom) / (top - bottom)) * H;
+
+  ctx.fillStyle = "#05080c";
+  ctx.fillRect(0, 0, W, H);
+
+  // grade e rótulos
+  ctx.font = `${11 * ratio}px ui-monospace, monospace`;
+  ctx.strokeStyle = "#1a2230";
+  ctx.fillStyle = "#5c6b80";
+  ctx.lineWidth = 1;
+  for (let v = Math.ceil(bottom / 10) * 10; v <= top; v += 10) {
+    ctx.beginPath(); ctx.moveTo(0, y(v)); ctx.lineTo(W, y(v)); ctx.stroke();
+    ctx.fillText((v - floorDb).toFixed(0) + " dB", 4 * ratio, y(v) - 3 * ratio);
+  }
+  if (state) {
+    const fs = state.sample_rate_hz;
+    for (let k = -100; k <= 100; k += 20) {
+      const x = ((k * 1e3 + fs / 2) / fs) * W;
+      if (x < 0 || x > W) continue;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillText((k > 0 ? "+" : "") + k + " kHz", x + 3 * ratio, H - 4 * ratio);
+    }
+    // marcadores dos emissores
+    ctx.setLineDash([4 * ratio, 4 * ratio]);
+    for (const e of state.emitters) {
+      if (!e.enabled || !e.in_band) continue;
+      const x = ((e.offset_hz + fs / 2) / fs) * W;
+      ctx.strokeStyle = "#d29922";
+      ctx.beginPath(); ctx.moveTo(x, 14 * ratio); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillStyle = "#d29922";
+      ctx.fillText(e.name, x + 3 * ratio, 12 * ratio);
+    }
+    ctx.setLineDash([]);
+  }
+
+  // traço
+  ctx.strokeStyle = "#4cc2ff";
+  ctx.lineWidth = 1.5 * ratio;
+  ctx.beginPath();
+  for (let i = 0; i < smoothed.length; i++) {
+    const x = (i / (smoothed.length - 1)) * W;
+    const v = Math.max(bottom, Math.min(top, smoothed[i]));
+    if (i === 0) ctx.moveTo(x, y(v)); else ctx.lineTo(x, y(v));
+  }
+  ctx.stroke();
+}
+
+function colormap(t) {
+  // preto -> azul -> ciano -> amarelo -> branco
+  const stops = [[0, 0, 0], [20, 30, 120], [30, 160, 220], [250, 220, 60], [255, 255, 255]];
+  t = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.min(Math.floor(t), stops.length - 2), f = t - i;
+  return stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * f));
+}
+
+function drawWaterfall(db) {
+  const resized = fitCanvas(waterfallCanvas);
+  const ctx = waterfallCanvas.getContext("2d");
+  const W = waterfallCanvas.width, H = waterfallCanvas.height;
+  if (resized) { ctx.fillStyle = "#05080c"; ctx.fillRect(0, 0, W, H); }
+  if (floorDb === null) return;
+
+  const rowHeight = Math.max(1, Math.round(window.devicePixelRatio || 1));
+  ctx.drawImage(waterfallCanvas, 0, 0, W, H - rowHeight, 0, rowHeight, W, H - rowHeight);
+
+  const row = ctx.createImageData(W, rowHeight);
+  for (let x = 0; x < W; x++) {
+    const v = db[Math.floor((x / W) * db.length)];
+    const [r, g, b] = colormap((v - floorDb + 5) / 45);
+    for (let yy = 0; yy < rowHeight; yy++) {
+      const p = (yy * W + x) * 4;
+      row.data[p] = r; row.data[p + 1] = g; row.data[p + 2] = b; row.data[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(row, 0, 0);
+}
+
+// --- controles --------------------------------------------------------------
+
+$("tune-apply").addEventListener("click", () => {
+  const value = Number($("tune-input").value);
+  if (value > 0) control({ tune_hz: Math.round(value * 1e6) });
+});
+$("tune-input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("tune-apply").click(); });
+document.querySelectorAll("[data-step]").forEach((button) =>
+  button.addEventListener("click", () => {
+    if (state) control({ tune_hz: state.center_frequency_hz + Number(button.dataset.step) });
+  }));
+$("tune-fs2").addEventListener("click", () => {
+  const fs2 = state && state.emitters.find((e) => e.name === "fs2");
+  if (fs2) control({ tune_hz: fs2.frequency_hz });
+});
+
+$("snr").addEventListener("input", () => { $("snr-value").textContent = $("snr").value + " dB"; });
+$("snr").addEventListener("change", () => control({ snr_db: Number($("snr").value) }));
+$("snr-clean").addEventListener("change", (ev) =>
+  control({ snr_db: ev.target.checked ? null : Number($("snr").value) }));
+
+$("dop-start").addEventListener("click", () => control({
+  doppler: { max_shift_hz: Number($("dop-max").value), pass_duration_s: Number($("dop-dur").value) },
+}));
+$("dop-stop").addEventListener("click", () => control({ doppler: { max_shift_hz: 0 } }));
+$("pk-reset").addEventListener("click", () => control({ reset_packets: true }));
+
+pollState();
+pollSpectrum();
+</script>
+</body>
+</html>

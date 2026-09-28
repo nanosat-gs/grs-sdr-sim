@@ -34,6 +34,7 @@ import numpy as np
 import zmq
 
 from sdr_sim import emitters as emitters_mod
+from sdr_sim.control import SimController
 from sdr_sim.spectrum import VirtualSpectrum
 
 DEFAULT_IQ_BIND = "tcp://*:5556"
@@ -84,10 +85,11 @@ class TuneListener(threading.Thread):
     como falha de demodulação, que é o sintoma mais caro de diagnosticar.
     """
 
-    def __init__(self, address: str, spectrum: VirtualSpectrum) -> None:
+    def __init__(self, address: str, controller: SimController) -> None:
         super().__init__(daemon=True, name="tune-listener")
         self._address = address
-        self._spectrum = spectrum
+        self._controller = controller
+        self._spectrum = controller.spectrum
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.SUB)
         self._socket.setsockopt_string(zmq.SUBSCRIBE, "tune")
@@ -115,8 +117,11 @@ class TuneListener(threading.Thread):
                 continue
 
             try:
-                previous = self._spectrum.center_frequency_hz
-                self._spectrum.tune(frequency)
+                # Mesma trava do laço de geração e do painel: um retune nunca
+                # cai no meio de um bloco.
+                with self._controller.lock:
+                    previous = self._spectrum.center_frequency_hz
+                    self._spectrum.tune(frequency)
             except ValueError as error:
                 print(f"[sdr-sim] tune recusado: {error}", flush=True)
                 continue
@@ -133,47 +138,49 @@ class TuneListener(threading.Thread):
         self._context.term()
 
 
+def expected_payload(args: argparse.Namespace) -> bytes:
+    """O que o FS-2 sintético põe depois do syncword. O monitor de pacotes
+    confere a saída do detector contra exatamente isto."""
+    return bytes(range(args.payload_bytes))
+
+
 def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
-    """Monta o cenário: o que está no ar, e onde."""
+    """Monta o cenário: o que está no ar, e onde.
+
+    Os três emissores existem SEMPRE; `--emitters` só decide quais começam
+    ligados. É o que deixa o painel ligar um emissor que não estava no
+    comando de partida sem reiniciar o simulador.
+    """
     doppler = None
     if args.doppler_hz:
         doppler = emitters_mod.PassDoppler(args.doppler_hz, args.pass_duration)
 
-    signals: list = []
+    signals = [
+        emitters_mod.fs2_beacon(
+            frequency_hz=args.fs2_frequency,
+            sample_rate_hz=args.sample_rate,
+            baud=args.baud,
+            payload=expected_payload(args),
+            gap_s=args.burst_gap,
+            doppler=doppler,
+        ),
+        emitters_mod.fm_station(
+            frequency_hz=args.fm_frequency,
+            sample_rate_hz=args.sample_rate,
+            amplitude=args.fm_amplitude,
+        ),
+        emitters_mod.carrier(
+            frequency_hz=args.carrier_frequency,
+            sample_rate_hz=args.sample_rate,
+            amplitude=args.carrier_amplitude,
+        ),
+    ]
 
-    if "fs2" in args.emitters:
-        payload = bytes(range(args.payload_bytes))
-        signals.append(
-            emitters_mod.fs2_beacon(
-                frequency_hz=args.fs2_frequency,
-                sample_rate_hz=args.sample_rate,
-                baud=args.baud,
-                payload=payload,
-                gap_s=args.burst_gap,
-                doppler=doppler,
-            )
-        )
+    for emitter in signals:
+        emitter.enabled = emitter.name in args.emitters
 
-    if "fm" in args.emitters:
-        signals.append(
-            emitters_mod.fm_station(
-                frequency_hz=args.fm_frequency,
-                sample_rate_hz=args.sample_rate,
-                amplitude=args.fm_amplitude,
-            )
-        )
-
-    if "carrier" in args.emitters:
-        signals.append(
-            emitters_mod.carrier(
-                frequency_hz=args.carrier_frequency,
-                sample_rate_hz=args.sample_rate,
-                amplitude=args.carrier_amplitude,
-            )
-        )
-
-    if not signals:
-        print("[sdr-sim] AVISO: nenhum emissor — só ruído sairá.", flush=True)
+    if not args.emitters:
+        print("[sdr-sim] AVISO: nenhum emissor ligado — só ruído sairá.", flush=True)
 
     return VirtualSpectrum(
         center_frequency_hz=args.frequency,
@@ -227,6 +234,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=0.0,
                         help="Segundos a transmitir. 0 = até receber sinal.")
 
+    parser.add_argument("--panel-port", type=int, default=0,
+                        help="Porta do painel web de controle. 0 = sem painel.")
+    parser.add_argument("--panel-host", default="0.0.0.0",
+                        help="Interface do painel. Dentro do container, 0.0.0.0; quem "
+                             "restringe a 127.0.0.1 é o mapeamento de porta do compose.")
+    parser.add_argument("--packets-source", default=None,
+                        help="PUB de raw packets do detector (:5558). O painel confere o "
+                             "que chega lá contra o que foi transmitido. Omitido = sem "
+                             "conferência.")
+
     args = parser.parse_args(argv)
     args.emitters = [name.strip() for name in args.emitters.split(",") if name.strip()]
 
@@ -260,12 +277,29 @@ def main(argv: list[str] | None = None) -> int:
     for line in spectrum.describe():
         print(line, flush=True)
 
+    controller = SimController(spectrum, args.block_samples)
+    controller.tune_source = args.tune_source
+
     listener = None
     if args.tune_source:
-        listener = TuneListener(args.tune_source, spectrum)
+        listener = TuneListener(args.tune_source, controller)
         listener.start()
     else:
         print("[sdr-sim] sintonia FIXA (sem --tune-source)", flush=True)
+
+    if args.packets_source:
+        # Import tardio: sem --packets-source, nada disto é carregado.
+        from sdr_sim.packets import PacketMonitor
+
+        controller.packets = PacketMonitor(args.packets_source, expected_payload(args), _shutdown)
+        controller.packets.start()
+
+    panel = None
+    if args.panel_port:
+        from sdr_sim.panel import start_panel
+
+        panel = start_panel(controller, args.panel_host, args.panel_port)
+        print(f"[sdr-sim] painel em http://{args.panel_host}:{args.panel_port}/", flush=True)
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -277,13 +311,11 @@ def main(argv: list[str] | None = None) -> int:
 
     block_duration = args.block_samples / args.sample_rate
     started = time.monotonic()
-    blocks = 0
 
     print(f"[sdr-sim] transmitindo (bloco de {block_duration * 1000:.1f} ms)", flush=True)
 
     while not _shutdown.is_set():
-        publisher.send(spectrum.block(args.block_samples).tobytes())
-        blocks += 1
+        publisher.send(controller.next_block().tobytes())
 
         if args.duration and spectrum.elapsed_s >= args.duration:
             break
@@ -298,10 +330,13 @@ def main(argv: list[str] | None = None) -> int:
 
     elapsed = time.monotonic() - started
     print(
-        f"[sdr-sim] {blocks} blocos, {spectrum.elapsed_s:.1f} s simulados em "
+        f"[sdr-sim] {controller.blocks} blocos, {spectrum.elapsed_s:.1f} s simulados em "
         f"{elapsed:.1f} s reais, {spectrum.retune_count} retunes",
         flush=True,
     )
+
+    if panel is not None:
+        panel.shutdown()
 
     publisher.close(linger=1000)
     context.term()

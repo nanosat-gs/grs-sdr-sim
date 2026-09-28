@@ -60,18 +60,24 @@ class PassDoppler:
     com a saída daquele cálculo, não com este.
     """
 
-    def __init__(self, max_shift_hz: float, pass_duration_s: float) -> None:
+    def __init__(
+        self, max_shift_hz: float, pass_duration_s: float, start_s: float = 0.0
+    ) -> None:
         if pass_duration_s <= 0:
             raise ValueError("a duração da passagem precisa ser positiva")
 
         self.max_shift_hz = max_shift_hz
         self.pass_duration_s = pass_duration_s
+        # Instante simulado em que a passagem começa. Uma passagem iniciada
+        # pelo painel com o simulador já rodando começa "agora", e não no
+        # instante zero — senão ela nasceria no meio da curva.
+        self.start_s = start_s
         # Escolhido para a curva gastar a maior parte da varredura perto da
         # aproximação máxima, como numa passagem de verdade.
         self._steepness = 6.0 / pass_duration_s
 
     def shift_at(self, elapsed_s: float) -> float:
-        centered = elapsed_s - self.pass_duration_s / 2.0
+        centered = (elapsed_s - self.start_s) - self.pass_duration_s / 2.0
 
         return -self.max_shift_hz * math.tanh(self._steepness * centered)
 
@@ -91,6 +97,9 @@ class Emitter:
     waveform: np.ndarray
     amplitude: float = 1.0
     doppler: PassDoppler | None = None
+    # Desligado é tratado como fora da banda: não é ouvido, mas continua
+    # consumindo a forma de onda, para a cadência não congelar.
+    enabled: bool = True
 
     # Posição corrente no ciclo e fase acumulada do deslocamento em frequência.
     # A fase PRECISA atravessar blocos: reiniciá-la a cada bloco criaria um
