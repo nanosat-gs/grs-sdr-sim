@@ -16,6 +16,12 @@ frequência e Doppler na 5581, o sintetizador soma e publica aqui, e o receptor
 virtual se move — com o sinal saindo do centro, e sumindo se a sintonia errar
 demais. A cadeia inteira passa a ser exercitável numa máquina de mesa.
 
+Com `--orbit-norad` (ou pelo painel), o FS-2 simulado passa a ser um satélite
+de verdade: o Doppler vem da órbita real, calculado aqui com geometria
+própria, e o sinal some abaixo do horizonte. Com `--station-tuning-source`,
+o painel põe ao lado o Doppler que o Station Manager anuncia — só para
+comparar, nunca para aplicar (ver `station_tuning.py`).
+
 O que ele NÃO simula, e é bom saber antes de confiar demais: ganho de antena,
 figura de ruído, interferência de banda adjacente, multipercurso, e o
 assentamento do PLL depois de um retune. Tudo o que ele reproduz é o que a
@@ -138,6 +144,17 @@ class TuneListener(threading.Thread):
         self._context.term()
 
 
+def optional_int(text: str) -> int | None:
+    """Inteiro, ou vazio para "não usar". O compose passa `--orbit-norad=` com
+    a variável vazia quando ninguém pediu órbita."""
+    if not text.strip():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"esperava um inteiro, veio {text!r}") from None
+
+
 def expected_payload(args: argparse.Namespace) -> bytes:
     """O que o FS-2 sintético põe depois do syncword. O monitor de pacotes
     confere a saída do detector contra exatamente isto."""
@@ -233,6 +250,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pass-duration", type=float, default=600.0,
                         help="Duração da passagem simulada, em segundos")
 
+    parser.add_argument("--orbit-norad", type=optional_int, default=None,
+                        help="NORAD ID do satélite que o FS-2 simulado imita. O TLE vem do "
+                             "CelesTrak e o Doppler, da órbita real vista da estação (GS_*). "
+                             "Substitui --doppler-hz. Vazio = sem órbita.")
+    parser.add_argument("--orbit-mode", choices=["realtime", "next-pass"], default="realtime",
+                        help="realtime: o satélite onde ele está agora. next-pass: adianta o "
+                             "relógio do satélite para a próxima passagem começar agora.")
+    parser.add_argument("--orbit-ignore-horizon", action="store_true",
+                        help="Ouvir o satélite mesmo abaixo do horizonte — para testar a malha "
+                             "de Doppler com a passagem sintética do station_demo.py.")
+    parser.add_argument("--station-tuning-source", default=None,
+                        help="PUB de sintonia do Station Manager (:5581). O painel compara o "
+                             "Doppler anunciado lá com o do simulador. Omitido = sem comparação.")
+
     parser.add_argument("--seed", type=int, default=None,
                         help="Semente do ruído. Fixe-a para uma corrida reproduzível.")
     parser.add_argument("--duration", type=float, default=0.0,
@@ -290,6 +321,29 @@ def main(argv: list[str] | None = None) -> int:
         listener.start()
     else:
         print("[sdr-sim] sintonia FIXA (sem --tune-source)", flush=True)
+
+    if args.orbit_norad:
+        mode = args.orbit_mode.replace("-", "_")
+        try:
+            controller.apply({"orbit": {
+                "norad_id": args.orbit_norad, "mode": mode,
+                "horizon": not args.orbit_ignore_horizon,
+            }})
+            orbital = controller.emitter("fs2").doppler
+            look = orbital.look_at(spectrum.elapsed_s)
+            print(f"[sdr-sim] FS-2 imita {orbital.satellite.name} (NORAD {args.orbit_norad}), "
+                  f"{mode}: el {look.elevation_deg:.1f}°, Doppler "
+                  f"{look.doppler_hz(args.fs2_frequency):+.0f} Hz", flush=True)
+        except ValueError as error:
+            # Sem rede não é motivo para não subir: o painel tenta de novo.
+            print(f"[sdr-sim] AVISO: órbita não carregada ({error}); FS-2 sem Doppler.",
+                  flush=True)
+
+    if args.station_tuning_source:
+        from sdr_sim.station_tuning import StationTuningMonitor
+
+        controller.station_tuning = StationTuningMonitor(args.station_tuning_source, _shutdown)
+        controller.station_tuning.start()
 
     if args.packets_source:
         # Import tardio: sem --packets-source, nada disto é carregado.

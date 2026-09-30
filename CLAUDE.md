@@ -18,6 +18,8 @@ sai do centro; muito longe e some.
 ```
 modulation.py   formas de onda, escritas da definição (2GFSK, FM)
 emitters.py     o que está no ar: frequência absoluta, forma de onda, Doppler
+orbit.py        Doppler da órbita real: TLE, estação, geometria própria, passagens
+station_tuning.py  escuta o Doppler anunciado na :5581 — só para comparar
 spectrum.py     soma os emissores na banda-base do receptor; sintonia e ruído
 control.py      SimController: estado mutável sob UMA trava (laço, tune, painel)
 panel.py        painel web (http.server): GET /api/state, /api/spectrum, POST /api/control
@@ -48,6 +50,20 @@ sinal não deve pular: o Doppler acompanha as amostras que de fato saíram.
 **O `tune` roda em thread separada.** Um `recv` bloqueante no laço de geração
 atrasaria as amostras, e o atraso apareceria como falha de demodulação — o
 sintoma mais caro de diagnosticar que existe.
+
+**O Doppler da órbita é calculado aqui, não pela spacelab-tracking.** Ela é
+quem CORRIGE o Doppler no Station Manager; se também o IMPUSESSE, um erro nela
+(sinal trocado, rotação da Terra esquecida) apareceria dos dois lados e o
+espectro ficaria centrado com a estação errada. A velocidade radial sai de
+diferença finita entre duas distâncias, sem velocidade nem ω×r — o caminho que
+a spacelab-tracking não usa. Só o SGP4 é compartilhado: é ele que define o que
+um TLE significa. Medido ao vivo: as duas contas concordam em 1–5 Hz (o resto
+é o tick de 1 s da estação).
+
+**O simulador não aplica o Doppler que a estação anuncia.** Seria circular: o
+desvio imposto seria exatamente o corrigido, e o erro sairia zero sempre. A
+:5581 é assinada só para o painel comparar (`station_tuning.py`), e só no modo
+tempo real — na "próxima passagem" o relógio do satélite está adiantado horas.
 
 **Semente fixa por padrão.** Sem ela, um teste que falha uma vez em dez não é
 investigável.
@@ -85,10 +101,19 @@ investigável.
   meio transmitiria um pacote truncado, contado como enviado e perdido sem
   culpa do cano. Por isso o painel espera ~2 s para zerar a contagem depois
   de trocar para manual.
+- **O SGP4 não recusa TLE velho.** Propaga um TLE de 2008 até hoje e devolve
+  uma posição inventada, sem erro. Por isso `Satellite.check_age` recusa TLE a
+  mais de 30 dias do instante simulado. Foi um teste que mostrou isso.
+- **Buscar TLE e achar a próxima passagem ficam FORA da trava.** É rede e uma
+  varredura de 48 h; segurar a trava congelaria o laço e abriria um buraco no
+  IQ. `_orbit_action` monta tudo antes e só troca o Doppler sob a trava.
+- **A portadora cadastrada no TC Scheduler precisa ser a do FS-2 simulado.** A
+  estação sintoniza em (portadora cadastrada + Doppler); se ela for 145,8 MHz e
+  o FS-2 estiver em 145,9, sobra 100 kHz que nenhuma correção de Doppler tira.
+  O painel avisa.
 - **O que ele NÃO simula:** ganho de antena, figura de ruído, interferência de
-  banda adjacente, multipercurso, e o assentamento do PLL depois de um retune.
-  O Doppler é um MODELO (curva em S), não propagação orbital — quem calcula
-  Doppler de verdade é a `spacelab-tracking`, no Station Manager.
+  banda adjacente, multipercurso, perda de percurso (o sinal não enfraquece no
+  horizonte), e o assentamento do PLL depois de um retune.
 
 ## Convenções
 

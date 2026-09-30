@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import math
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 
+from sdr_sim import orbit
 from sdr_sim.emitters import PassDoppler
 from sdr_sim.spectrum import VirtualSpectrum
 
@@ -33,6 +35,10 @@ MAX_PACKETS_PER_REQUEST = 100
 # o painel mostraria perda permanente só por causa do trânsito.
 IN_FLIGHT_S = 1.5
 
+# Anúncio de Doppler da estação mais velho que isto não entra na comparação: o
+# Station Manager publica a cada tick (1 s), então parado = passagem acabou.
+STATION_DOPPLER_FRESH_S = 5.0
+
 
 class SimController:
     """Estado mutável do simulador, protegido por uma trava única."""
@@ -44,6 +50,11 @@ class SimController:
         self.blocks = 0
         self.tune_source: str | None = None
         self.packets = None  # PacketMonitor, quando houver
+        self.station_tuning = None  # StationTuningMonitor, quando houver
+        # De onde o Doppler da órbita é calculado. As mesmas GS_* da estação.
+        self.station = orbit.GroundStation.from_environment()
+        # Trocável nos testes: é a única parte que vai à rede.
+        self.fetch_satellite = orbit.fetch_celestrak
         self._last_block: np.ndarray | None = None
         # Instante simulado em que cada rajada do FS-2 começou a sair, e a
         # contagem de enviados no último "zerar".
@@ -135,12 +146,8 @@ class SimController:
                     "amplitude": emitter.amplitude,
                     "offset_hz": offset,
                     "in_band": abs(offset) <= half_band,
-                    "doppler": None if doppler is None else {
-                        "max_shift_hz": doppler.max_shift_hz,
-                        "pass_duration_s": doppler.pass_duration_s,
-                        "progress_s": elapsed - doppler.start_s,
-                        "shift_hz": doppler.shift_at(elapsed),
-                    },
+                    "audible": emitter.audible_at(elapsed),
+                    "doppler": _describe_doppler(doppler, elapsed, emitter.frequency_hz),
                 })
 
             state = {
@@ -159,8 +166,45 @@ class SimController:
         period = self.fs2_period_s()
         state["fs2_period_s"] = period
         state["packets"] = None if self.packets is None else self.packets.snapshot()
+        state["station_tuning"] = self._station_comparison(state["emitters"])
 
         return state
+
+    def _station_comparison(self, emitters: list[dict]) -> dict | None:
+        """O Doppler que a estação anuncia ao lado do que o simulador impõe.
+
+        A estação anuncia para a portadora cadastrada no TC Scheduler, que pode
+        não ser a do FS-2 simulado. O Doppler é proporcional à portadora, então
+        o número dela é trazido para a portadora do simulador antes de
+        comparar. A diferença de portadora aparece à parte: é um offset que a
+        malha de sintonia NÃO corrige, e o sinal sairia do centro por causa
+        dela.
+        """
+        if self.station_tuning is None:
+            return None
+
+        snapshot = self.station_tuning.snapshot()
+        fs2 = next((e for e in emitters if e["name"] == "fs2"), None)
+        doppler = fs2["doppler"] if fs2 else None
+        station_freq = snapshot["frequency_hz"]
+        station_doppler = snapshot["doppler_hz"]
+        age = snapshot["doppler_age_s"]
+        fresh = age is not None and age <= STATION_DOPPLER_FRESH_S
+
+        # Só em tempo real: na "próxima passagem" o relógio do satélite está
+        # adiantado horas, e a estação calcula o agora — a diferença seria de
+        # quilohertz e não diria nada sobre nenhuma das duas contas.
+        comparison = None
+        if (doppler and doppler["kind"] == "orbit" and doppler["mode"] == "realtime"
+                and fresh and station_freq and station_doppler is not None):
+            equivalent = station_doppler * fs2["frequency_hz"] / station_freq
+            comparison = {
+                "station_doppler_at_sim_carrier_hz": equivalent,
+                "difference_hz": doppler["shift_hz"] - equivalent,
+                "carrier_difference_hz": fs2["frequency_hz"] - station_freq,
+            }
+
+        return {**snapshot, "fresh": fresh, "comparison": comparison}
 
     def spectrum_db(self, bins: int = SPECTRUM_BINS) -> list[float]:
         """Espectro de potência do último bloco, em dB, do mais negativo ao mais positivo.
@@ -198,7 +242,7 @@ class SimController:
             raise ValueError("esperava um objeto JSON")
 
         unknown = set(changes) - {
-            "tune_hz", "snr_db", "emitters", "doppler", "reset_packets",
+            "tune_hz", "snr_db", "emitters", "doppler", "orbit", "reset_packets",
             "fs2_mode", "send_packets",
         }
         if unknown:
@@ -301,9 +345,93 @@ class SimController:
 
                 actions.append(start_pass)
 
+        if "orbit" in changes:
+            if "doppler" in changes:
+                raise ValueError("doppler e orbit no mesmo pedido: o FS-2 tem um Doppler só")
+            fs2 = self.emitter("fs2")
+            if changes["orbit"] is None:
+                actions.append(_setter(fs2, "doppler", None))
+            else:
+                actions.append(self._orbit_action(fs2, changes["orbit"]))
+
         with self.lock:
             for action in actions:
                 action()
+
+    def _orbit_action(self, fs2, request: Any):
+        """Valida e monta o Doppler da órbita FORA da trava.
+
+        Buscar o TLE é rede e achar a próxima passagem é uma varredura de 48 h:
+        segurar a trava durante isso congelaria o laço de geração, e o
+        demodulador veria um buraco no IQ.
+        """
+        if not isinstance(request, dict):
+            raise ValueError("orbit precisa ser um objeto")
+        extra = set(request) - {"norad_id", "tle", "mode", "horizon", "min_peak_deg"}
+        if extra:
+            raise ValueError(f"orbit: campo desconhecido {sorted(extra)}")
+
+        mode = request.get("mode", "realtime")
+        if mode not in orbit.MODES:
+            raise ValueError(f"orbit.mode precisa ser um de {', '.join(orbit.MODES)}")
+        horizon = request.get("horizon", True)
+        if not isinstance(horizon, bool):
+            raise ValueError("orbit.horizon precisa ser true/false")
+
+        if ("norad_id" in request) == ("tle" in request):
+            raise ValueError("orbit precisa de norad_id OU tle")
+        if "norad_id" in request:
+            norad = request["norad_id"]
+            if isinstance(norad, bool) or not isinstance(norad, int) or not 0 < norad < 10**6:
+                raise ValueError("orbit.norad_id precisa ser um inteiro positivo")
+            satellite = self.fetch_satellite(norad)
+        else:
+            lines = request["tle"]
+            if (not isinstance(lines, list) or len(lines) not in (2, 3)
+                    or not all(isinstance(line, str) for line in lines)):
+                raise ValueError("orbit.tle precisa ser [linha1, linha2] ou [nome, linha1, linha2]")
+            name = lines[0] if len(lines) == 3 else None
+            satellite = orbit.Satellite(lines[-2], lines[-1], name)
+
+        observer = orbit.Observer(satellite, self.station)
+        now = datetime.now(timezone.utc)
+        satellite.check_age(now)
+        simulated_pass = None
+        if mode == "next_pass":
+            min_peak = _number(request.get("min_peak_deg", 10.0), "orbit.min_peak_deg")
+            _check_range(min_peak, (0.0, 90.0), "orbit.min_peak_deg")
+            simulated_pass = orbit.next_pass(observer, now, min_peak_deg=min_peak)
+        else:
+            # Propaga uma vez aqui: um TLE de satélite já reentrado falha no
+            # pedido, com mensagem, e não no laço de geração.
+            observer.look(now)
+
+        def start():
+            if simulated_pass is not None:
+                # O relógio do satélite é adiantado: a passagem começa agora.
+                utc_at_start = simulated_pass.aos - timedelta(seconds=orbit.NEXT_PASS_LEAD_S)
+            else:
+                utc_at_start = datetime.now(timezone.utc)
+            fs2.doppler = orbit.OrbitalDoppler(
+                observer, utc_at_start, start_s=self.spectrum.elapsed_s,
+                mode=mode, horizon=horizon, simulated_pass=simulated_pass,
+            )
+
+        return start
+
+
+def _describe_doppler(doppler, elapsed: float, carrier_hz: float) -> dict | None:
+    if doppler is None:
+        return None
+    if doppler.kind == "orbit":
+        return doppler.describe(elapsed, carrier_hz)
+    return {
+        "kind": "model",
+        "max_shift_hz": doppler.max_shift_hz,
+        "pass_duration_s": doppler.pass_duration_s,
+        "progress_s": elapsed - doppler.start_s,
+        "shift_hz": doppler.shift_at(elapsed),
+    }
 
 
 def _number(value: Any, field: str) -> float:

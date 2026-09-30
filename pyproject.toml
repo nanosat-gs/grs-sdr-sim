@@ -9,12 +9,15 @@ description = "SDR virtual da estação terrestre SpaceLab — substituto do grs
 readme = "README.md"
 requires-python = ">=3.11"
 
-# Duas dependências, e nenhuma delas é scipy: a conformação gaussiana e o
+# Três dependências, e nenhuma delas é scipy: a conformação gaussiana e o
 # ruído são numpy puro. Um simulador que arrasta meio ambiente científico para
-# dentro da imagem de teste acaba não sendo usado.
+# dentro da imagem de teste acaba não sendo usado. O sgp4 é o propagador que
+# define o que um TLE significa (wheel pequeno, sem dependências); a geometria
+# em volta dele é escrita aqui — ver orbit.py.
 dependencies = [
     "numpy>=1.26",
     "pyzmq>=25,<26",
+    "sgp4>=2.23",
 ]
 
 [project.optional-dependencies]

@@ -56,9 +56,11 @@ class PassDoppler:
     para testar o cano é a ordem de grandeza e o sentido da varredura — quem
     calcula Doppler de verdade é a spacelab_tracking, no Station Manager.
 
-    Quem quiser o número exato de uma passagem real deve alimentar o simulador
-    com a saída daquele cálculo, não com este.
+    Para o número de uma passagem real, use `orbit.OrbitalDoppler`: mesma
+    interface, com a geometria do satélite de verdade.
     """
+
+    kind = "model"
 
     def __init__(
         self, max_shift_hz: float, pass_duration_s: float, start_s: float = 0.0
@@ -76,10 +78,16 @@ class PassDoppler:
         # aproximação máxima, como numa passagem de verdade.
         self._steepness = 6.0 / pass_duration_s
 
-    def shift_at(self, elapsed_s: float) -> float:
+    def shift_at(self, elapsed_s: float, carrier_hz: float | None = None) -> float:
+        # `carrier_hz` é ignorado: o pico do modelo já é dado em Hz. Está na
+        # assinatura porque o Doppler da órbita precisa dele.
         centered = (elapsed_s - self.start_s) - self.pass_duration_s / 2.0
 
         return -self.max_shift_hz * math.tanh(self._steepness * centered)
+
+    def audible_at(self, elapsed_s: float) -> bool:
+        # O modelo não tem horizonte: o satélite é ouvido a passagem toda.
+        return True
 
 
 @dataclass
@@ -96,6 +104,8 @@ class Emitter:
     frequency_hz: float
     waveform: np.ndarray
     amplitude: float = 1.0
+    # PassDoppler (modelo) ou orbit.OrbitalDoppler (órbita real): os dois
+    # respondem shift_at(elapsed, portadora) e audible_at(elapsed).
     doppler: PassDoppler | None = None
     # Desligado é tratado como fora da banda: não é ouvido, mas continua
     # consumindo a forma de onda, para a cadência não congelar.
@@ -160,9 +170,13 @@ class Emitter:
 
     def offset_from(self, center_hz: float, elapsed_s: float) -> float:
         """Onde este emissor cai na banda-base do receptor, em Hz."""
-        shift = self.doppler.shift_at(elapsed_s) if self.doppler else 0.0
+        shift = self.doppler.shift_at(elapsed_s, self.frequency_hz) if self.doppler else 0.0
 
         return (self.frequency_hz + shift) - center_hz
+
+    def audible_at(self, elapsed_s: float) -> bool:
+        """Falso com o satélite abaixo do horizonte (Doppler de órbita)."""
+        return self.doppler is None or self.doppler.audible_at(elapsed_s)
 
     def mix(self, n: int, offset_hz: float, sample_rate_hz: float) -> np.ndarray:
         """Desloca `n` amostras para `offset_hz`, mantendo a fase entre blocos."""

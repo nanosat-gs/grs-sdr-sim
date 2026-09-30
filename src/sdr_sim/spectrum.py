@@ -77,7 +77,9 @@ class VirtualSpectrum:
         out = []
 
         for emitter in self.emitters:
-            if not emitter.enabled:
+            # Abaixo do horizonte é como desligado: não é ouvido, mas a forma
+            # de onda continua correndo (ver block()).
+            if not emitter.enabled or not emitter.audible_at(self.elapsed_s):
                 continue
             offset = emitter.offset_from(self.center_frequency_hz, self.elapsed_s)
             if abs(offset) <= half_band:
@@ -134,6 +136,8 @@ class VirtualSpectrum:
             offset = emitter.offset_from(self.center_frequency_hz, self.elapsed_s)
             if not emitter.enabled:
                 status = "desligado"
+            elif not emitter.audible_at(self.elapsed_s):
+                status = "abaixo do horizonte"
             elif abs(offset) <= half_band:
                 status = "na banda"
             else:

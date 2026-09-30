@@ -83,6 +83,11 @@
   .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 6px; }
   .bar > div { height: 100%; background: var(--accent); width: 0; }
   #error { color: var(--bad); font-size: 12px; min-height: 1em; }
+  .sub { font: 600 11px var(--mono); color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 14px 0 4px; border-top: 1px solid var(--line); padding-top: 10px; }
+  textarea { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 8px; font: 11px var(--mono); width: 100%; resize: vertical; }
+  .meta.ok { color: var(--ok); } .meta.warn { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -158,19 +163,43 @@
     </div>
 
     <div class="card">
-      <h2>Doppler do FS-2 (passagem simulada)</h2>
-      <div class="row">
-        pico <input type="number" id="dop-max" value="3500" step="100"> Hz
-      </div>
-      <div class="row">
-        duração <input type="number" id="dop-dur" value="120" step="10"> s
-      </div>
-      <div class="row">
-        <button class="primary" id="dop-start">Iniciar passagem</button>
-        <button id="dop-stop">Desligar</button>
-      </div>
+      <h2>Doppler do FS-2</h2>
       <div class="meta" id="dop-status">Doppler desligado</div>
       <div class="bar"><div id="dop-bar"></div></div>
+      <div class="meta" id="orb-where"></div>
+      <div class="meta" id="orb-pass"></div>
+      <div class="meta" id="orb-station"></div>
+
+      <div class="sub">Órbita real — o FS-2 vira o satélite</div>
+      <div class="row">
+        NORAD <input type="number" id="orb-norad" placeholder="25544" style="width:90px">
+        <span class="meta">ou cole o TLE:</span>
+      </div>
+      <textarea id="orb-tle" rows="3" placeholder="nome (opcional)&#10;1 25544U ...&#10;2 25544 ..."></textarea>
+      <div class="row">
+        <label><input type="radio" name="orbmode" value="realtime" checked> onde ele está agora</label>
+        <label><input type="radio" name="orbmode" value="next_pass"> próxima passagem, começando agora</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="orb-horizon" checked> só ouvido acima do horizonte</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="orb-start">Usar órbita</button>
+        <button id="orb-stop">Desligar</button>
+      </div>
+      <p class="hint">O Doppler sai da órbita (TLE do CelesTrak ou colado) vista da estação (GS_*), com
+        geometria própria do simulador. "Agora" é o mesmo instante que o Station Manager usa: com
+        uma passagem do station_demo.py, desmarque o horizonte. "Próxima passagem" adianta o
+        relógio do satélite — a estação não a rastreia, é para ver o cano sem correção.</p>
+
+      <div class="sub">Modelo — curva em S</div>
+      <div class="row">
+        pico <input type="number" id="dop-max" value="3500" step="100" style="width:80px"> Hz
+        duração <input type="number" id="dop-dur" value="120" step="10" style="width:64px"> s
+      </div>
+      <div class="row">
+        <button id="dop-start">Iniciar passagem modelo</button>
+      </div>
       <p class="hint">Um LEO em VHF desvia ~3,5 kHz. Sem --tune-source, o receptor não acompanha: o
         sinal escorrega pelo espectro.</p>
     </div>
@@ -270,7 +299,7 @@ function render(s) {
   $("snr-value").textContent = clean ? "limpo" : s.snr_db.toFixed(0) + " dB";
 
   renderEmitters(s.emitters);
-  renderDoppler(s.emitters.find((e) => e.name === "fs2"));
+  renderDoppler(s.emitters.find((e) => e.name === "fs2"), s.station_tuning);
   renderTransmission(s.transmission, s.emitters.find((e) => e.name === "fs2"));
   renderPackets(s.packets, s.transmission);
 }
@@ -339,19 +368,84 @@ function renderEmitters(emitters) {
   }
 }
 
-function renderDoppler(fs2) {
+function hz(value) { return (value >= 0 ? "+" : "") + value.toFixed(0) + " Hz"; }
+function utc(iso) { return iso ? iso.slice(0, 19).replace("T", " ") + " UTC" : "–"; }
+
+function renderDoppler(fs2, tuning) {
+  for (const id of ["orb-where", "orb-pass"]) $(id).textContent = "";
+  renderStationTuning(fs2, tuning);
   if (!fs2 || !fs2.doppler) {
     $("dop-status").textContent = "Doppler desligado";
     $("dop-bar").style.width = "0";
     return;
   }
   const d = fs2.doppler;
+  if (d.kind === "orbit") { renderOrbit(d); return; }
   const progress = Math.max(0, Math.min(1, d.progress_s / d.pass_duration_s));
   const phase = d.progress_s > d.pass_duration_s ? " (passagem terminada)" : "";
   $("dop-status").textContent =
     `desvio agora ${d.shift_hz >= 0 ? "+" : ""}${d.shift_hz.toFixed(0)} Hz · ` +
     `${d.progress_s.toFixed(0)} de ${d.pass_duration_s.toFixed(0)} s${phase}`;
   $("dop-bar").style.width = (progress * 100).toFixed(1) + "%";
+}
+
+function renderOrbit(d) {
+  const mode = d.mode === "next_pass" ? "próxima passagem" : "tempo real";
+  const heard = d.audible ? "" : " — abaixo do horizonte, calado";
+  $("dop-status").textContent =
+    `${d.satellite} (NORAD ${d.norad_id}, ${d.source === "celestrak" ? "CelesTrak" : "TLE colado"}) · ` +
+    `${mode} · desvio agora ${hz(d.shift_hz)}${heard}`;
+  $("orb-where").textContent =
+    `el ${d.elevation_deg.toFixed(1)}° az ${d.azimuth_deg.toFixed(0)}° · ` +
+    `${d.range_km.toFixed(0)} km · ${(d.range_rate_km_s >= 0 ? "+" : "") + d.range_rate_km_s.toFixed(2)} km/s · ` +
+    `relógio do satélite ${utc(d.utc)}`;
+  if (d.pass) {
+    const p = d.pass;
+    const aos = new Date(p.aos).getTime(), los = new Date(p.los).getTime();
+    const now = new Date(d.utc).getTime();
+    const progress = Math.max(0, Math.min(1, (now - aos) / (los - aos)));
+    $("dop-bar").style.width = (progress * 100).toFixed(1) + "%";
+    const when = now < aos ? `AOS em ${((aos - now) / 1000).toFixed(0)} s`
+      : now > los ? "passagem terminada" : `LOS em ${((los - now) / 1000).toFixed(0)} s`;
+    $("orb-pass").textContent =
+      `passagem de ${utc(p.aos)} antecipada · pico ${p.peak_elevation_deg.toFixed(0)}° · ` +
+      `${(p.duration_s / 60).toFixed(1)} min · ${when}`;
+  } else {
+    $("dop-bar").style.width = d.audible ? "100%" : "0";
+    if (Math.abs(d.time_offset_s) > 2) {
+      $("orb-pass").textContent =
+        `atenção: o satélite está ${d.time_offset_s.toFixed(1)} s fora do relógio — a máquina não acompanha o tempo real`;
+    }
+  }
+}
+
+function renderStationTuning(fs2, t) {
+  const box = $("orb-station");
+  box.className = "meta";
+  if (!t) { box.textContent = "Comparação com a estação desligada (sem --station-tuning-source)."; return; }
+  if (!t.fresh) {
+    box.textContent = "Station Manager (:5581): sem anúncio de Doppler agora — nenhuma passagem " +
+      "rastreada, ou satélite abaixo da elevação mínima de apontamento.";
+    return;
+  }
+  const station = `Station Manager: ${hz(t.doppler_hz)} @ ${mhz(t.frequency_hz)} MHz`;
+  if (!t.comparison) {
+    const d = fs2 && fs2.doppler;
+    box.textContent = station + (d && d.kind === "orbit" && d.mode === "next_pass"
+      ? " (sem comparação: o relógio do satélite está adiantado para a próxima passagem)"
+      : " (use a órbita real em tempo real para comparar)");
+    return;
+  }
+  const c = t.comparison;
+  const agree = Math.abs(c.difference_hz) <= 20;
+  box.className = "meta " + (agree ? "ok" : "warn");
+  let text = `${station} · no FS-2: ${hz(c.station_doppler_at_sim_carrier_hz)} · ` +
+    `diferença ${hz(c.difference_hz)}${agree ? " — concordam" : " — confira satélite e estação"}`;
+  if (Math.abs(c.carrier_difference_hz) >= 1) {
+    text += ` · ATENÇÃO: portadora cadastrada difere do FS-2 em ${khz(c.carrier_difference_hz)} — ` +
+      "a sintonia vai errar por isso";
+  }
+  box.textContent = text;
 }
 
 function renderPackets(p, tx) {
@@ -536,7 +630,26 @@ $("snr-clean").addEventListener("change", (ev) =>
 $("dop-start").addEventListener("click", () => control({
   doppler: { max_shift_hz: Number($("dop-max").value), pass_duration_s: Number($("dop-dur").value) },
 }));
-$("dop-stop").addEventListener("click", () => control({ doppler: { max_shift_hz: 0 } }));
+$("orb-start").addEventListener("click", () => {
+  const request = {
+    mode: document.querySelector('input[name="orbmode"]:checked').value,
+    horizon: $("orb-horizon").checked,
+  };
+  const lines = $("orb-tle").value.split("\n").map((l) => l.trim()).filter((l) => l);
+  if (lines.length) request.tle = lines;
+  else if ($("orb-norad").value) request.norad_id = Number($("orb-norad").value);
+  else { $("error").textContent = "informe o NORAD ou cole o TLE"; return; }
+  // Buscar no CelesTrak e varrer 48 h atrás da próxima passagem leva uns
+  // segundos: o botão fica desabilitado para não sair um segundo pedido.
+  const button = $("orb-start");
+  button.disabled = true;
+  button.textContent = request.norad_id ? "Buscando no CelesTrak…" : "Calculando…";
+  control({ orbit: request }).finally(() => {
+    button.disabled = false;
+    button.textContent = "Usar órbita";
+  });
+});
+$("orb-stop").addEventListener("click", () => control({ orbit: null }));
 $("pk-reset").addEventListener("click", () => control({ reset_packets: true }));
 
 // Ao passar para manual, a rajada em curso termina de sair (cortá-la seria
