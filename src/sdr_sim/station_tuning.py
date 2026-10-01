@@ -23,9 +23,17 @@ import zmq
 class StationTuningMonitor(threading.Thread):
     """Assina `[freq]` e `[doppler]` e guarda o último de cada."""
 
-    def __init__(self, address: str, shutdown: threading.Event) -> None:
+    def __init__(self, address: str, shutdown: threading.Event,
+                 channel: str | None = None) -> None:
         super().__init__(daemon=True, name="station-tuning")
         self.address = address
+        # Com mais de um rádio, o Station Manager anuncia cada um no seu canal
+        # (`freq.vhf`, `doppler.uhf`...). O simulador de cada rádio compara com
+        # o seu. Sem canal, os tópicos sem sufixo.
+        self.channel = channel or None
+        suffix = f".{self.channel}".encode() if self.channel else b""
+        self._freq_topic = b"freq" + suffix
+        self._doppler_topic = b"doppler" + suffix
         self._shutdown = shutdown
         self._lock = threading.Lock()
         self._frequency_hz: float | None = None
@@ -35,11 +43,14 @@ class StationTuningMonitor(threading.Thread):
     def run(self) -> None:
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
-        socket.setsockopt(zmq.SUBSCRIBE, b"freq")
-        socket.setsockopt(zmq.SUBSCRIBE, b"doppler")
+        # O SUB filtra por prefixo: "freq" também recebe "freq.vhf". Por isso
+        # handle() compara o tópico inteiro.
+        socket.setsockopt(zmq.SUBSCRIBE, self._freq_topic)
+        socket.setsockopt(zmq.SUBSCRIBE, self._doppler_topic)
         socket.setsockopt(zmq.RCVTIMEO, 500)
         socket.connect(self.address)
-        print(f"[sdr-sim] comparando com o Doppler anunciado em {self.address}", flush=True)
+        print(f"[sdr-sim] comparando com o Doppler anunciado em {self.address} "
+              f"(canal {self.channel or 'único'})", flush=True)
 
         while not self._shutdown.is_set():
             try:
@@ -61,9 +72,9 @@ class StationTuningMonitor(threading.Thread):
         except (ValueError, UnicodeDecodeError):
             return
         with self._lock:
-            if frames[0] == b"freq":
+            if frames[0] == self._freq_topic:
                 self._frequency_hz = value
-            elif frames[0] == b"doppler":
+            elif frames[0] == self._doppler_topic:
                 self._doppler_hz = value
                 self._doppler_at = time.monotonic()
 
@@ -72,10 +83,11 @@ class StationTuningMonitor(threading.Thread):
             age = None if self._doppler_at is None else time.monotonic() - self._doppler_at
             return {
                 "source": self.address,
+                "channel": self.channel,
                 "frequency_hz": self._frequency_hz,
                 "doppler_hz": self._doppler_hz,
-                # O Station Manager anuncia a cada tick (1 s). Parado há mais
-                # que alguns segundos = passagem acabou ou satélite abaixo da
-                # elevação mínima de apontamento.
+                # O Station Manager anuncia a cada tick (1 s) enquanto rastreia,
+                # com o satélite acima ou abaixo do horizonte. Parado há mais
+                # que alguns segundos = nenhuma passagem sendo rastreada.
                 "doppler_age_s": age,
             }

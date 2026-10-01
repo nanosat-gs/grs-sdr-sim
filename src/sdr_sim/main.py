@@ -260,6 +260,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--orbit-ignore-horizon", action="store_true",
                         help="Ouvir o satélite mesmo abaixo do horizonte — para testar a malha "
                              "de Doppler com a passagem sintética do station_demo.py.")
+    parser.add_argument("--station-tuning-channel", default="",
+                        help="Rádio que este simulador imita (vhf, uhf...): compara com "
+                             "freq.<canal>/doppler.<canal>. Vazio = os tópicos sem canal.")
     parser.add_argument("--station-tuning-source", default=None,
                         help="PUB de sintonia do Station Manager (:5581). O painel compara o "
                              "Doppler anunciado lá com o do simulador. Omitido = sem comparação.")
@@ -342,7 +345,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.station_tuning_source:
         from sdr_sim.station_tuning import StationTuningMonitor
 
-        controller.station_tuning = StationTuningMonitor(args.station_tuning_source, _shutdown)
+        controller.station_tuning = StationTuningMonitor(
+            args.station_tuning_source, _shutdown, channel=args.station_tuning_channel)
         controller.station_tuning.start()
 
     if args.packets_source:

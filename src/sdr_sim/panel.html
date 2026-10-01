@@ -425,7 +425,7 @@ function renderStationTuning(fs2, t) {
   if (!t) { box.textContent = "Comparação com a estação desligada (sem --station-tuning-source)."; return; }
   if (!t.fresh) {
     box.textContent = "Station Manager (:5581): sem anúncio de Doppler agora — nenhuma passagem " +
-      "rastreada, ou satélite abaixo da elevação mínima de apontamento.";
+      "sendo rastreada, ou o satélite rastreado sem frequência de downlink deste rádio.";
     return;
   }
   const station = `Station Manager: ${hz(t.doppler_hz)} @ ${mhz(t.frequency_hz)} MHz`;

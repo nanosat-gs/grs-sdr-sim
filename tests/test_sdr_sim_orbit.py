@@ -414,3 +414,21 @@ def test_proxima_passagem_nao_e_comparada_com_a_estacao():
     tuning = sim.state()["station_tuning"]
 
     assert tuning["fresh"] is True and tuning["comparison"] is None
+
+
+
+def test_monitor_com_canal_so_le_o_seu_radio():
+    """O SUB filtra por prefixo: sem comparar o tópico inteiro, o simulador
+    do VHF compararia o próprio Doppler com o do UHF (3,2 vezes maior)."""
+    import threading
+
+    monitor = StationTuningMonitor("tcp://ninguem:5581", threading.Event(), channel="vhf")
+    monitor.handle([b"freq.uhf", b"468400000"])
+    monitor.handle([b"doppler.uhf", b"-7500"])
+    monitor.handle([b"freq.vhf", b"145900000"])
+    monitor.handle([b"doppler.vhf", b"-2345"])
+    monitor.handle([b"doppler", b"1"])
+
+    snapshot = monitor.snapshot()
+    assert (snapshot["frequency_hz"], snapshot["doppler_hz"]) == (145_900_000.0, -2345.0)
+    assert snapshot["channel"] == "vhf"

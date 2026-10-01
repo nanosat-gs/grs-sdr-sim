@@ -65,6 +65,13 @@ desvio imposto seria exatamente o corrigido, e o erro sairia zero sempre. A
 :5581 é assinada só para o painel comparar (`station_tuning.py`), e só no modo
 tempo real — na "próxima passagem" o relógio do satélite está adiantado horas.
 
+**Um simulador por rádio.** A estação tem uma cadeia por faixa; no compose
+há o `grs-sdr-sim` (VHF, beacon a 1200 baud) e o `grs-sdr-sim-uhf` (dados a
+4800 baud), os dois imitando o mesmo satélite. `--station-tuning-channel`
+escolhe com que canal da :5581 cada um se compara (`doppler.vhf`, ...); o
+prefixo do ZMQ faria `doppler` receber os dois, por isso o tópico é comparado
+inteiro.
+
 **Semente fixa por padrão.** Sem ela, um teste que falha uma vez em dez não é
 investigável.
 
