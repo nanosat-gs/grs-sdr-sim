@@ -303,3 +303,35 @@ def test_taxa_que_nao_divide_o_baud_e_recusada():
 def test_poucas_amostras_por_simbolo_e_recusado():
     with pytest.raises(ValueError, match="amostras por símbolo"):
         modulation.modulate_2gfsk(np.ones(10, dtype=int), samples_per_symbol=1)
+
+
+
+# --- payload embaralhado como o NGHam -----------------------------------------------
+
+
+def test_sequencia_ccsds_bate_com_a_tabela_do_firmware():
+    """Primeiros bytes de `ccsds_poly` em ttc2/firmware/.../ccsds_scrambler.c."""
+    assert em.ccsds_pn(16) == bytes.fromhex("ff480ec09a0d70bc8e2c93ada7b746ce")
+
+
+def test_payload_embaralhado_tem_bits_equilibrados():
+    """O que deixa o centro do espectro na portadora (ver ccsds_scramble)."""
+    from sdr_sim.main import expected_payload, parse_args
+
+    payload = expected_payload(parse_args([]))
+    ones = sum(bin(byte).count("1") for byte in payload) / (8 * len(payload))
+
+    assert 0.45 <= ones <= 0.55
+    assert em.ccsds_scramble(payload) == bytes(range(len(payload)))
+
+
+def test_payload_embaralhado_nao_contem_o_syncword():
+    """Um syncword (com até 1 bit errado, a tolerância do detector) dentro do
+    payload faria o detector achar um pacote fantasma."""
+    from sdr_sim.main import expected_payload, parse_args
+
+    bits = em.bytes_to_bits(expected_payload(parse_args([])))
+    sync = em.bytes_to_bits(em.NGHAM_SYNCWORD)
+    windows = np.lib.stride_tricks.sliding_window_view(bits, len(sync))
+
+    assert np.min(np.count_nonzero(windows != sync, axis=1)) > 1

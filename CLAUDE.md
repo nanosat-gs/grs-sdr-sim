@@ -72,6 +72,16 @@ escolhe com que canal da :5581 cada um se compara (`doppler.vhf`, ...); o
 prefixo do ZMQ faria `doppler` receber os dois, por isso o tópico é comparado
 inteiro.
 
+**O payload é embaralhado com a sequência CCSDS, como o NGHam faz.** Sem
+isso, `00 01 02 ... 3F` tem 37,5% de uns, o tom do bit 0 pesa mais e o centro
+do espectro escorrega ~50 Hz a 1200 baud — o bloco FFT mediu exatamente isso.
+O satélite embaralha; o simulador também (`emitters.ccsds_scramble`, conferido
+contra a tabela `ccsds_poly` do firmware).
+
+**Erro do oscilador do satélite** (`--fs2-offset-hz`, ou pelo painel): a
+portadora sai deslocada da nominal, e o Doppler é calculado sobre ela. É o
+que o ajuste fino da estação tem de achar.
+
 **Semente fixa por padrão.** Sem ela, um teste que falha uma vez em dez não é
 investigável.
 

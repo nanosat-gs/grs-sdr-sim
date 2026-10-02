@@ -432,3 +432,38 @@ def test_monitor_com_canal_so_le_o_seu_radio():
     snapshot = monitor.snapshot()
     assert (snapshot["frequency_hz"], snapshot["doppler_hz"]) == (145_900_000.0, -2345.0)
     assert snapshot["channel"] == "vhf"
+
+
+
+# --- erro do oscilador do satélite ------------------------------------------------------
+
+
+def test_erro_do_oscilador_desloca_o_sinal_e_entra_no_doppler(observer, a_pass):
+    """O Doppler é sobre a portadora REAL: 1200 Hz a mais em 145,9 MHz muda o
+    desvio em frações de hertz, mas a conta tem de estar certa."""
+    when = a_pass.aos + timedelta(seconds=60)
+    beacon = em.carrier(CARRIER, SAMPLE_RATE)
+    beacon.carrier_offset_hz = 1200.0
+    beacon.doppler = orbit.OrbitalDoppler(observer, when, start_s=0.0)
+    spectrum = VirtualSpectrum(CARRIER, SAMPLE_RATE, [beacon], snr_db=None)
+
+    expected = 1200.0 + observer.look(when).doppler_hz(CARRIER + 1200.0)
+    assert spectrum.visible()[0][1] == pytest.approx(expected, abs=0.5)
+
+
+def test_erro_do_oscilador_pelo_painel():
+    sim = controller()
+
+    sim.apply({"emitters": {"fs2": {"carrier_offset_hz": -3000}}})
+
+    fs2 = sim.state()["emitters"][0]
+    assert fs2["carrier_offset_hz"] == -3000.0
+    assert fs2["offset_hz"] == pytest.approx(-3000.0)
+    with pytest.raises(ValueError, match="carrier_offset_hz"):
+        sim.apply({"emitters": {"fs2": {"carrier_offset_hz": 50_000}}})
+
+
+def test_erro_do_oscilador_pela_linha_de_comando():
+    spectrum = build_spectrum(parse_args(["--fs2-offset-hz", "1200", "--snr-db", "none"]))
+
+    assert spectrum.emitters[0].carrier_offset_hz == 1200.0

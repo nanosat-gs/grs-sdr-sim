@@ -31,6 +31,37 @@ NGHAM_SYNCWORD = bytes((0x5D, 0xE6, 0x2A, 0x7E))
 NGHAM_PREAMBLE = 0xAA
 
 
+def ccsds_pn(length: int) -> bytes:
+    """A sequência pseudoaleatória do scrambler CCSDS (CCSDS 131.0-B):
+    h(x) = x^8 + x^7 + x^5 + x^3 + 1, registrador todo em 1.
+
+    Começa FF 48 0E C0 9A 0D 70 BC — igual, byte a byte, à tabela
+    `ccsds_poly` do NGHam no firmware do TTC 2.0 (ccsds_scrambler.c).
+    """
+    state = [1] * 8
+    out = bytearray()
+    for _ in range(length):
+        byte = 0
+        for _ in range(8):
+            byte = (byte << 1) | state[0]
+            state = state[1:] + [state[0] ^ state[3] ^ state[5] ^ state[7]]
+        out.append(byte)
+    return bytes(out)
+
+
+def ccsds_scramble(data: bytes) -> bytes:
+    """XOR com a sequência CCSDS, como o NGHam faz com o codeword.
+
+    Por que o simulador embaralha: o satélite embaralha, e isso deixa os bits
+    EQUILIBRADOS (metade 0, metade 1). Sem isso o payload `00 01 02 ... 3F`
+    tem 37,5% de uns, o tom do bit 0 fica mais forte que o do bit 1, e o
+    centro do espectro escorrega ~50 Hz a 1200 baud — o bloco FFT mediu
+    exatamente isso e o ajuste fino "corrigiu" um erro que o satélite real
+    não teria.
+    """
+    return bytes(a ^ b for a, b in zip(data, ccsds_pn(len(data))))
+
+
 def bytes_to_bits(data: bytes) -> np.ndarray:
     """MSB primeiro, que é a ordem em que o NGH_SYNC do ngham.c está escrito."""
     return np.array([(byte >> (7 - i)) & 1 for byte in data for i in range(8)], dtype=np.uint8)
@@ -107,6 +138,11 @@ class Emitter:
     # PassDoppler (modelo) ou orbit.OrbitalDoppler (órbita real): os dois
     # respondem shift_at(elapsed, portadora) e audible_at(elapsed).
     doppler: PassDoppler | None = None
+    # Erro do oscilador do transmissor: a portadora sai aqui, e não na
+    # nominal. O TTC 2.0 declara cristal de ±10 ppm (até ±1,5 kHz em 145,9 MHz,
+    # ±4,7 kHz em 468,4 MHz). É o que o Doppler previsto não vê e o ajuste
+    # fino (bloco FFT) tem de achar.
+    carrier_offset_hz: float = 0.0
     # Desligado é tratado como fora da banda: não é ouvido, mas continua
     # consumindo a forma de onda, para a cadência não congelar.
     enabled: bool = True
@@ -170,9 +206,10 @@ class Emitter:
 
     def offset_from(self, center_hz: float, elapsed_s: float) -> float:
         """Onde este emissor cai na banda-base do receptor, em Hz."""
-        shift = self.doppler.shift_at(elapsed_s, self.frequency_hz) if self.doppler else 0.0
+        actual = self.frequency_hz + self.carrier_offset_hz
+        shift = self.doppler.shift_at(elapsed_s, actual) if self.doppler else 0.0
 
-        return (self.frequency_hz + shift) - center_hz
+        return (actual + shift) - center_hz
 
     def audible_at(self, elapsed_s: float) -> bool:
         """Falso com o satélite abaixo do horizonte (Doppler de órbita)."""

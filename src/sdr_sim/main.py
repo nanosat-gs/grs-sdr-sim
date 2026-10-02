@@ -158,7 +158,9 @@ def optional_int(text: str) -> int | None:
 def expected_payload(args: argparse.Namespace) -> bytes:
     """O que o FS-2 sintético põe depois do syncword. O monitor de pacotes
     confere a saída do detector contra exatamente isto."""
-    return bytes(range(args.payload_bytes))
+    # Embaralhado como o NGHam embaralha (ver emitters.ccsds_scramble): bits
+    # equilibrados, como os do satélite.
+    return emitters_mod.ccsds_scramble(bytes(range(args.payload_bytes)))
 
 
 def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
@@ -196,6 +198,7 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
     for emitter in signals:
         emitter.enabled = emitter.name in args.emitters
     signals[0].continuous = args.fs2_mode == "continuous"
+    signals[0].carrier_offset_hz = args.fs2_offset_hz
 
     if not args.emitters:
         print("[sdr-sim] AVISO: nenhum emissor ligado — só ruído sairá.", flush=True)
@@ -230,6 +233,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--emitters", default="fs2",
                         help="Lista separada por vírgula: fs2, fm, carrier")
     parser.add_argument("--fs2-frequency", type=float, default=DEFAULT_FS2_HZ)
+    parser.add_argument("--fs2-offset-hz", type=float, default=0.0,
+                        help="Erro do oscilador do FS-2: a portadora sai deslocada disto da "
+                             "nominal (o que o ajuste fino da estação tem de achar)")
     parser.add_argument("--fm-frequency", type=float, default=DEFAULT_FS2_HZ + 60_000.0)
     parser.add_argument("--fm-amplitude", type=float, default=0.7)
     parser.add_argument("--carrier-frequency", type=float, default=DEFAULT_FS2_HZ + 20_000.0)

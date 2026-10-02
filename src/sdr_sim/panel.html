@@ -343,11 +343,14 @@ function renderEmitters(emitters) {
         <div class="meta info"></div>
         <div class="meta where"></div>
         <div class="row">amplitude <input type="range" class="amp" min="0" max="2" step="0.05">
-          <span class="meta ampv"></span></div>`;
+          <span class="meta ampv"></span></div>
+        <div class="row">erro do oscilador <input type="number" class="osc" step="100" style="width:90px"> Hz</div>`;
       div.querySelector(".emitter-name").textContent = e.name;
       div.querySelector(".info").textContent = EMITTER_INFO[e.name] || "";
       div.querySelector(".en").addEventListener("change", (ev) =>
         control({ emitters: { [e.name]: { enabled: ev.target.checked } } }));
+      div.querySelector(".osc").addEventListener("change", (ev) =>
+        control({ emitters: { [e.name]: { carrier_offset_hz: Number(ev.target.value) || 0 } } }));
       div.querySelector(".amp").addEventListener("change", (ev) =>
         control({ emitters: { [e.name]: { amplitude: Number(ev.target.value) } } }));
       box.appendChild(div);
@@ -356,6 +359,8 @@ function renderEmitters(emitters) {
   for (const e of emitters) {
     const div = box.querySelector(`[data-name="${e.name}"]`);
     div.querySelector(".en").checked = e.enabled;
+    const osc = div.querySelector(".osc");
+    if (!editing(osc)) osc.value = e.carrier_offset_hz;
     const amp = div.querySelector(".amp");
     if (!editing(amp)) amp.value = e.amplitude;
     div.querySelector(".ampv").textContent = e.amplitude.toFixed(2);

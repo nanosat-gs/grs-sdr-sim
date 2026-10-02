@@ -27,6 +27,7 @@ SPECTRUM_BINS = 1024
 SNR_RANGE_DB = (-20.0, 60.0)
 AMPLITUDE_RANGE = (0.0, 2.0)
 DOPPLER_MAX_HZ = 50_000.0
+CARRIER_OFFSET_MAX_HZ = 20_000.0
 MAX_PACKETS_PER_REQUEST = 100
 
 # Quanto tempo depois de começar a sair uma rajada ela pode ainda não ter
@@ -144,6 +145,7 @@ class SimController:
                     "frequency_hz": emitter.frequency_hz,
                     "enabled": emitter.enabled,
                     "amplitude": emitter.amplitude,
+                    "carrier_offset_hz": emitter.carrier_offset_hz,
                     "offset_hz": offset,
                     "in_band": abs(offset) <= half_band,
                     "audible": emitter.audible_at(elapsed),
@@ -306,7 +308,7 @@ class SimController:
                 emitter = self.emitter(name)
                 if not isinstance(fields, dict):
                     raise ValueError(f"emitters.{name} precisa ser um objeto")
-                extra = set(fields) - {"enabled", "amplitude"}
+                extra = set(fields) - {"enabled", "amplitude", "carrier_offset_hz"}
                 if extra:
                     raise ValueError(f"emitters.{name}: campo desconhecido {sorted(extra)}")
 
@@ -314,6 +316,12 @@ class SimController:
                     if not isinstance(fields["enabled"], bool):
                         raise ValueError(f"emitters.{name}.enabled precisa ser true/false")
                     actions.append(_setter(emitter, "enabled", fields["enabled"]))
+
+                if "carrier_offset_hz" in fields:
+                    offset = _number(fields["carrier_offset_hz"], f"emitters.{name}.carrier_offset_hz")
+                    _check_range(offset, (-CARRIER_OFFSET_MAX_HZ, CARRIER_OFFSET_MAX_HZ),
+                                 f"emitters.{name}.carrier_offset_hz")
+                    actions.append(_setter(emitter, "carrier_offset_hz", offset))
 
                 if "amplitude" in fields:
                     amplitude = _number(fields["amplitude"], f"emitters.{name}.amplitude")
