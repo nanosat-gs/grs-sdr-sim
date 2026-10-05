@@ -44,11 +44,36 @@ python -m sdr_sim.main --orbit-norad 25544
 
 # a próxima passagem da ISS, começando agora
 python -m sdr_sim.main --orbit-norad 25544 --orbit-mode next-pass
+
+# o oscilador do satélite errado em +1200 Hz: o que o ajuste fino da estação tem de achar
+python -m sdr_sim.main --orbit-norad 25544 --fs2-offset-hz 1200
 ```
 
 No compose: `SIM_ORBIT_NORAD=25544` (e `SIM_ORBIT_MODE=next-pass`, se quiser)
 antes do `docker compose --profile rxsim up`. As coordenadas da estação vêm
 das mesmas `GS_*` do TC Scheduler e do Station Manager.
+
+### Um simulador por rádio
+
+A estação tem duas cadeias de recepção, e o compose sobe um simulador para
+cada uma:
+
+| Serviço | Rádio | Portadora / baud | Painel | Erro de oscilador |
+|---|---|---|---|---|
+| `grs-sdr-sim` | VHF (beacon) | 145,9 MHz / 1200 | <http://localhost:8090> | `SIM_FS2_OFFSET_HZ` |
+| `grs-sdr-sim-uhf` | UHF (dados) | 468,4 MHz / 4800 | <http://localhost:8093> | `SIM_UHF_FS2_OFFSET_HZ` |
+
+Cada um segue o `tune` do sintetizador do seu rádio e, com
+`--station-tuning-channel vhf|uhf`, compara o próprio Doppler com o do canal
+dele na :5581 (`doppler.vhf`, `doppler.uhf`).
+
+### O payload é embaralhado, como no satélite
+
+O FS-2 manda `00 01 02 ...` embaralhado com a sequência CCSDS (a mesma tabela
+`ccsds_poly` do firmware do TTC 2.0, ver `emitters.ccsds_scramble`). Sem
+embaralhar, o payload tinha 37,5% de uns e enviesava em −50 Hz a medida do
+bloco FFT — o satélite real embaralha, então o simulador também. Ainda não há
+quadro NGHam de verdade (size tag, Reed-Solomon).
 
 ## Painel de controle
 
@@ -68,9 +93,11 @@ simulador rodando, sem reiniciar:
     (desmarcável). Mostra elevação, distância, velocidade radial e o desvio;
   - **modelo** — a curva em S, com pico e duração escolhidos;
 - **comparação com a estação**: com `--station-tuning-source
-  tcp://station-manager:5581` (ligado no compose), o painel põe o Doppler que o
-  Station Manager anuncia ao lado do que o simulador impõe. Só compara, nunca
-  aplica;
+  tcp://station-manager:5581` (ligado no compose, com
+  `--station-tuning-channel` do rádio), o painel põe o Doppler que o Station
+  Manager anuncia ao lado do que o simulador impõe. Só compara, nunca aplica;
+- **erro do oscilador do FS-2**: a portadora sai deslocada da nominal, e o
+  Doppler é calculado sobre ela (`--fs2-offset-hz` na partida);
 - **transmissão do FS-2**: contínua (uma rajada a cada ~0,67 s) ou
   **manual** — calado até você pedir "enviar 1 pacote" (ou N). Também na
   partida: `--fs2-mode manual`.
