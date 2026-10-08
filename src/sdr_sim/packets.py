@@ -15,6 +15,7 @@ import json
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 import zmq
@@ -24,7 +25,11 @@ RATE_WINDOW_S = 10.0
 
 
 class PacketMonitor(threading.Thread):
-    def __init__(self, address: str, expected_payload: bytes, shutdown: threading.Event) -> None:
+    def __init__(self, address: str, expected_payload: bytes | Callable[[bytes], bool],
+                 shutdown: threading.Event) -> None:
+        """`expected_payload`: os bytes que toda rajada leva, ou — quando o
+        conteúdo muda a cada rajada (General Telemetry ao vivo) — uma função
+        que diz se o payload recebido é um pacote válido."""
         super().__init__(daemon=True, name="packet-monitor")
         self.address = address
         self._expected = expected_payload
@@ -72,7 +77,10 @@ class PacketMonitor(threading.Thread):
             return
 
         payload = frames[2]
-        ok = payload[: len(self._expected)] == self._expected
+        if callable(self._expected):
+            ok = self._expected(payload)
+        else:
+            ok = payload[: len(self._expected)] == self._expected
         now = time.monotonic()
 
         with self._lock:

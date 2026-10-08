@@ -14,10 +14,15 @@ requires-python = ">=3.11"
 # dentro da imagem de teste acaba não sendo usado. O sgp4 é o propagador que
 # define o que um TLE significa (wheel pequeno, sem dependências); a geometria
 # em volta dele é escrita aqui — ver orbit.py.
+#
+# O pyngham (Python puro, LGPLv3) monta os quadros NGHam de verdade do
+# --frame general-telemetry (fs2_frames.py). Mesma versão exata que o
+# grs-telemetry-decoder pina.
 dependencies = [
     "numpy>=1.26",
     "pyzmq>=25,<26",
     "sgp4>=2.23",
+    "pyngham==1.1.1",
 ]
 
 [project.optional-dependencies]

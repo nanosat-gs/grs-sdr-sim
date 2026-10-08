@@ -158,9 +158,34 @@ def optional_int(text: str) -> int | None:
 def expected_payload(args: argparse.Namespace) -> bytes:
     """O que o FS-2 sintético põe depois do syncword. O monitor de pacotes
     confere a saída do detector contra exatamente isto."""
+    if args.frame == "general-telemetry":
+        # Quadro NGHam de verdade (fs2_frames.py). Já sai embaralhado pelo
+        # próprio NGHam — passar pelo ccsds_scramble aqui embaralharia duas
+        # vezes, e o decodificador receberia lixo com CRC errado.
+        from sdr_sim import fs2_frames
+
+        timestamp = args.frame_timestamp if args.frame_timestamp is not None else int(time.time())
+        return fs2_frames.ngham_frame(fs2_frames.general_telemetry(timestamp))
+
     # Embaralhado como o NGHam embaralha (ver emitters.ccsds_scramble): bits
     # equilibrados, como os do satélite.
     return emitters_mod.ccsds_scramble(bytes(range(args.payload_bytes)))
+
+
+def live_telemetry(args: argparse.Namespace) -> bool:
+    """General Telemetry com o relógio andando: um pacote novo por rajada.
+    Com --frame-timestamp, o pacote é um só, fixo — para corrida reproduzível."""
+    return args.frame == "general-telemetry" and args.frame_timestamp is None
+
+
+def packet_check(args: argparse.Namespace):
+    """O que o monitor de pacotes confere. Pacote fixo: os bytes exatos. Pacote
+    que muda a cada rajada: que seja um General Telemetry NGHam válido."""
+    if live_telemetry(args):
+        from sdr_sim import fs2_frames
+
+        return fs2_frames.is_general_telemetry_frame
+    return expected_payload(args)
 
 
 def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
@@ -174,6 +199,12 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
     if args.doppler_hz:
         doppler = emitters_mod.PassDoppler(args.doppler_hz, args.pass_duration)
 
+    payload_source = None
+    if live_telemetry(args):
+        from sdr_sim import fs2_frames
+
+        payload_source = fs2_frames.GeneralTelemetryStream()
+
     signals = [
         emitters_mod.fs2_beacon(
             frequency_hz=args.fs2_frequency,
@@ -182,6 +213,7 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
             payload=expected_payload(args),
             gap_s=args.burst_gap,
             doppler=doppler,
+            payload_source=payload_source,
         ),
         emitters_mod.fm_station(
             frequency_hz=args.fm_frequency,
@@ -242,7 +274,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--carrier-amplitude", type=float, default=0.3)
 
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
-    parser.add_argument("--payload-bytes", type=int, default=64)
+    parser.add_argument("--payload-bytes", type=int, default=64,
+                        help="Tamanho do padrão do --frame pattern")
+    parser.add_argument("--frame", choices=["pattern", "general-telemetry"], default="pattern",
+                        help="pattern: 00 01 02 ... embaralhado, para o DSP (não é NGHam). "
+                             "general-telemetry: um General Telemetry (0x10) do FS-2 em "
+                             "quadro NGHam de verdade, que o grs-telemetry-decoder decodifica.")
+    parser.add_argument("--frame-timestamp", type=int, default=None,
+                        help="Fixa o General Telemetry num instante (Unix epoch): o mesmo "
+                             "pacote em toda rajada, para corrida reproduzível. Omitido = um "
+                             "pacote novo por rajada, com o relógio da máquina e valores "
+                             "variando.")
     parser.add_argument("--burst-gap", type=float, default=0.5,
                         help="Silêncio entre rajadas, em segundos")
     parser.add_argument("--fs2-mode", choices=["continuous", "manual"], default="continuous",
@@ -359,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         # Import tardio: sem --packets-source, nada disto é carregado.
         from sdr_sim.packets import PacketMonitor
 
-        controller.packets = PacketMonitor(args.packets_source, expected_payload(args), _shutdown)
+        controller.packets = PacketMonitor(args.packets_source, packet_check(args), _shutdown)
         controller.packets.start()
 
     panel = None

@@ -10,6 +10,7 @@ simulador que sempre entrega o sinal centrado não testaria sintonia nenhuma.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -152,6 +153,11 @@ class Emitter:
     # Ciclos iniciados desde a partida. Para uma rajada, é quantos pacotes
     # foram de fato transmitidos — o denominador honesto de "quantos chegaram".
     bursts_sent: int = field(default=0, repr=False)
+    # Chamado no início de cada ciclo, devolve a forma de onda DESTE ciclo.
+    # None = repetir `waveform` para sempre. É como o satélite manda um pacote
+    # novo a cada rajada (relógio andando, valores mudando) em vez de uma
+    # cópia do primeiro.
+    regenerate: Callable[[], np.ndarray] | None = field(default=None, repr=False)
     _pending: int = field(default=0, repr=False)
 
     # Posição corrente no ciclo e fase acumulada do deslocamento em frequência.
@@ -197,6 +203,9 @@ class Emitter:
                 else:
                     break  # manual e nada pedido: o resto do bloco é silêncio
 
+                if self.regenerate is not None:
+                    self.waveform = self.regenerate().astype(np.complex64)
+
             chunk = min(n - filled, len(self.waveform) - self._cursor)
             out[filled : filled + chunk] = self.waveform[self._cursor : self._cursor + chunk]
             filled += chunk
@@ -237,24 +246,34 @@ def fs2_beacon(
     bt: float = 0.5,
     amplitude: float = 1.0,
     doppler: PassDoppler | None = None,
+    payload_source: Callable[[], bytes] | None = None,
 ) -> Emitter:
-    """Rajadas 2GFSK com enquadramento NGHam, como o downlink do FS-2."""
+    """Rajadas 2GFSK com enquadramento NGHam, como o downlink do FS-2.
+
+    `payload`: o mesmo em toda rajada. `payload_source`: chamado a cada
+    rajada, um payload novo por vez (fs2_frames.GeneralTelemetryStream) —
+    `payload` então só serve à primeira forma de onda.
+    """
     if sample_rate_hz % baud != 0:
         raise ValueError(
             f"{sample_rate_hz} S/s não é múltiplo de {baud} baud; o resto vira erro de fase"
         )
 
-    burst = modulation.modulate_2gfsk(
-        build_frame(payload), samples_per_symbol=sample_rate_hz // baud, bt=bt
-    )
     silence = np.zeros(int(round(gap_s * sample_rate_hz)), dtype=np.complex64)
+
+    def cycle(data: bytes) -> np.ndarray:
+        burst = modulation.modulate_2gfsk(
+            build_frame(data), samples_per_symbol=sample_rate_hz // baud, bt=bt
+        )
+        return np.concatenate((burst, silence))
 
     return Emitter(
         name="fs2",
         frequency_hz=frequency_hz,
-        waveform=np.concatenate((burst, silence)),
+        waveform=cycle(payload),
         amplitude=amplitude,
         doppler=doppler,
+        regenerate=(lambda: cycle(payload_source())) if payload_source else None,
     )
 
 
