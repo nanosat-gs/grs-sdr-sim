@@ -26,6 +26,9 @@ panel.py        painel web (http.server): GET /api/state, /api/spectrum, POST /a
 panel.html      a página do painel, servida de dentro do pacote
 packets.py      assina :5558 e confere o payload contra o que foi transmitido
 main.py         serviço: PUB :5556, SUB :5557 tune, ritmo de tempo real
+satellite.py    o OBDH recebendo TCs: o process_tc.c v1.0 (Ping, Activate/Deactivate Module)
+uplink_rx.py    o rádio de bordo: IQ GMSK -> bits -> syncword -> NGHam
+uplink.py       REP :5559 (TX, contrato do grs-iq-rx/usrp), Doppler/horizonte, PUB/SUB :5567 das respostas
 ```
 
 ## Decisões, e por quê
@@ -138,3 +141,37 @@ investigável.
 - Testes conferem **propriedades do sinal** (offset, índice de modulação, SNR
   medido, continuidade de fase), não que o processo roda. Um simulador que
   mente contamina todo teste feito com ele.
+
+## O satélite simulado (uplink)
+
+Com `--tx-bind`, o simulador também é o **satélite recebendo o uplink**: o
+`grs-uplink` manda a rajada pela :5559 (o mesmo contrato do USRP,
+`grs-station/docs/tx-datapath.md`), o simulador espera a duração real dela e
+responde `ack`, e então:
+
+1. confere se o satélite ouviria: acima do horizonte, e com o residual de
+   frequência (`tx_freq + Doppler - nominal`) dentro de `--uplink-tolerance-hz`.
+   É assim que um erro de sinal na correção de Doppler do uplink aparece aqui;
+2. demodula (`uplink_rx.py`, GMSK da definição, sem código do `grs-uplink`);
+3. entrega ao modelo do OBDH (`satellite.py`), que confere o HMAC com
+   `--sat-keys-file` e responde como o `process_tc.c` v1.0;
+4. a resposta do próprio rádio (o pong, VHF) entra na fila de prioridade do
+   emissor `fs2` deste simulador; a do outro rádio (o `0x13`, UHF) sai pelo PUB
+   `--responses-bind` (:5567) e o simulador da UHF a pega com `--responses-source`.
+
+A resposta passa na frente da telemetria na próxima rajada, nos dois modos
+(no manual, sai sem pedido). Pelo painel: aceitar/recusar TX, "falhar o
+próximo com o código X", "ignorar o próximo".
+
+**Decisões:**
+- **O modelo do OBDH é escrito de novo, sem importar o `grs-uplink` nem o
+  decoder.** Ele é o juiz dos dois: HMAC errado morre calado aqui, como no
+  satélite.
+- **`--tc-rx-max-bytes` emula o TTC2 lendo um número fixo de bytes** (o 80 do
+  `uplink_manager.c`, TODO-1 do planejamento). Padrão 0, sem limite, que é a
+  premissa atual. Com 80, a classe NGHam 2 passa pelo Reed-Solomon e a 3 não —
+  há teste disso.
+- **Com `--orbit-mode next-pass` o uplink não fecha:** o relógio do satélite
+  está adiantado e o Doppler que a estação corrige não é o que o simulador
+  impõe. Para exercitar o uplink, órbita em tempo real ou sem órbita.
+

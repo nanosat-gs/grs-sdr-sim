@@ -226,6 +226,42 @@
         </table>
       </div>
     </div>
+    <div class="card">
+      <h2>Satélite simulado — uplink (:5559)</h2>
+      <div id="up-off" class="meta">Sem uplink (sem --tx-bind).</div>
+      <div id="up-on" hidden>
+        <div class="row">
+          <label><input type="checkbox" id="up-tx"> TX aceito (o "rádio" responde ack)</label>
+        </div>
+        <div class="stats">
+          <div><b class="big" id="up-bursts">0</b><span>rajadas</span></div>
+          <div><b class="big ok" id="up-received">0</b><span>TCs a bordo</span></div>
+          <div><b class="big bad" id="up-rejected">0</b><span>HMAC inválido</span></div>
+        </div>
+        <div class="stats" style="margin-top:8px">
+          <div><b class="big" id="up-sent">0</b><span>respostas no ar</span></div>
+          <div><b class="big warn" id="up-queued">0</b><span>na fila</span></div>
+          <div><b class="big" id="up-last">–</b><span>último TC válido</span></div>
+        </div>
+        <div class="row">
+          <button id="up-fail">Falhar o próximo com</button>
+          <input type="number" id="up-code" value="-2" min="-5" max="-1" style="width:56px">
+          <button id="up-drop">Ignorar o próximo</button>
+        </div>
+        <div class="meta" id="up-inject"></div>
+        <table>
+          <thead><tr><th>TC</th><th>de</th><th>B</th><th>o que o OBDH fez</th></tr></thead>
+          <tbody id="up-tcs"></tbody>
+        </table>
+        <table>
+          <thead><tr><th>rajada</th><th>MHz</th><th>residual</th><th>rádio de bordo</th></tr></thead>
+          <tbody id="up-bursts-table"></tbody>
+        </table>
+        <p class="hint">O satélite só ouve a rajada que chega a menos de <span id="up-tol">–</span>
+          Hz da nominal, depois do Doppler da órbita: é aqui que um erro de sinal na correção do
+          uplink aparece.</p>
+      </div>
+    </div>
     <div id="error"></div>
   </aside>
 </main>
@@ -302,6 +338,48 @@ function render(s) {
   renderDoppler(s.emitters.find((e) => e.name === "fs2"), s.station_tuning);
   renderTransmission(s.transmission, s.emitters.find((e) => e.name === "fs2"));
   renderPackets(s.packets, s.transmission);
+  renderUplink(s.uplink);
+}
+
+function fillTable(id, rows) {
+  const body = $(id);
+  body.replaceChildren();
+  for (const cells of rows) {
+    const tr = document.createElement("tr");
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
+
+function renderUplink(u) {
+  const on = !!(u && u.satellite);
+  $("up-off").hidden = on;
+  $("up-on").hidden = !on;
+  if (!on) {
+    if (u && u.responses) $("up-off").textContent =
+      `Sem uplink aqui; ${u.responses.sent} resposta(s) do satélite transmitidas por este rádio.`;
+    return;
+  }
+  const sat = u.satellite;
+  if (!editing($("up-tx"))) $("up-tx").checked = u.tx_enabled;
+  $("up-bursts").textContent = u.bursts;
+  $("up-received").textContent = sat.received;
+  $("up-rejected").textContent = sat.rejected_hmac;
+  $("up-sent").textContent = u.responses ? u.responses.sent : 0;
+  $("up-queued").textContent = u.responses ? u.responses.queued : 0;
+  $("up-last").textContent = sat.last_valid_tc || "–";
+  $("up-tol").textContent = u.tolerance_hz.toFixed(0);
+  $("up-inject").textContent = sat.fail_next !== null ? `próximo TC falha com ${sat.fail_next}`
+    : sat.drop_next ? "próximo TC será ignorado" : "";
+  fillTable("up-tcs", sat.recent.map((t) => [t.tc_id, t.requester, t.length,
+    t.outcome + (t.responses.length ? " → " + t.responses.map((r) => r.pkt_id + " " + r.radio).join(", ") : "")]));
+  fillTable("up-bursts-table", u.recent_bursts.map((b) => [b.burst_id, mhz(b.tx_freq_hz),
+    b.residual_hz === null ? "–" : (b.residual_hz >= 0 ? "+" : "") + b.residual_hz.toFixed(0) + " Hz",
+    b.outcome]));
 }
 
 function renderTransmission(tx, fs2) {
@@ -690,6 +768,12 @@ $("send-many").addEventListener("click", () => {
   if (reset) changes.reset_packets = true;
   control(changes);
 });
+$("up-tx").addEventListener("change", () => control({ uplink: { tx_enabled: $("up-tx").checked } }));
+$("up-fail").addEventListener("click", () => {
+  const code = Math.round(Number($("up-code").value));
+  if (code < 0) control({ uplink: { fail_next: code } });
+});
+$("up-drop").addEventListener("click", () => control({ uplink: { drop_next: true } }));
 
 pollState();
 pollSpectrum();

@@ -10,6 +10,7 @@ simulador que sempre entrega o sinal centrado não testaria sintonia nenhuma.
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -158,7 +159,17 @@ class Emitter:
     # novo a cada rajada (relógio andando, valores mudando) em vez de uma
     # cópia do primeiro.
     regenerate: Callable[[], np.ndarray] | None = field(default=None, repr=False)
+    # Monta a forma de onda de um ciclo a partir de um payload (quadro +
+    # silêncio). Com ele, o emissor aceita respostas a telecomando na fila de
+    # prioridade (`enqueue`): o satélite responde na próxima rajada, no lugar
+    # da telemetria, e no modo manual a resposta sai mesmo sem pedido.
+    waveform_for: Callable[[bytes], np.ndarray] | None = field(default=None, repr=False)
+    responses_sent: int = field(default=0, repr=False)
     _pending: int = field(default=0, repr=False)
+    _priority: deque = field(default_factory=deque, repr=False)
+    # A forma de onda de partida. Sem `regenerate`, é ela que volta depois de
+    # uma resposta — senão a resposta viraria o ciclo e se repetiria para sempre.
+    _base_waveform: np.ndarray | None = field(default=None, repr=False)
 
     # Posição corrente no ciclo e fase acumulada do deslocamento em frequência.
     # A fase PRECISA atravessar blocos: reiniciá-la a cada bloco criaria um
@@ -172,10 +183,25 @@ class Emitter:
         if len(self.waveform) == 0:
             raise ValueError(f"emissor {self.name} sem forma de onda")
         self.waveform = self.waveform.astype(np.complex64)
+        self._base_waveform = self.waveform
 
     @property
     def pending(self) -> int:
         return self._pending
+
+    @property
+    def queued_responses(self) -> int:
+        return len(self._priority)
+
+    def enqueue(self, payload: bytes) -> None:
+        """Uma resposta a telecomando, para sair na próxima rajada.
+
+        A forma de onda é montada aqui, fora do laço de geração; o laço só tira
+        da fila (deque.append/popleft são atômicos, dispensam a trava).
+        """
+        if self.waveform_for is None:
+            raise ValueError(f"emissor {self.name} não transmite pacotes")
+        self._priority.append(self.waveform_for(payload).astype(np.complex64))
 
     def trigger(self, count: int = 1) -> None:
         """Enfileira `count` ciclos no modo manual."""
@@ -195,16 +221,24 @@ class Emitter:
 
         while filled < n:
             if self._cursor == 0:
-                if self.continuous:
+                if self._priority:
+                    # Resposta a telecomando: passa na frente, nos dois modos.
+                    self.waveform = self._priority.popleft()
                     self.bursts_sent += 1
-                elif self._pending > 0:
-                    self._pending -= 1
-                    self.bursts_sent += 1
+                    self.responses_sent += 1
                 else:
-                    break  # manual e nada pedido: o resto do bloco é silêncio
+                    if self.continuous:
+                        self.bursts_sent += 1
+                    elif self._pending > 0:
+                        self._pending -= 1
+                        self.bursts_sent += 1
+                    else:
+                        break  # manual e nada pedido: o resto do bloco é silêncio
 
-                if self.regenerate is not None:
-                    self.waveform = self.regenerate().astype(np.complex64)
+                    if self.regenerate is not None:
+                        self.waveform = self.regenerate().astype(np.complex64)
+                    else:
+                        self.waveform = self._base_waveform
 
             chunk = min(n - filled, len(self.waveform) - self._cursor)
             out[filled : filled + chunk] = self.waveform[self._cursor : self._cursor + chunk]
@@ -274,6 +308,7 @@ def fs2_beacon(
         amplitude=amplitude,
         doppler=doppler,
         regenerate=(lambda: cycle(payload_source())) if payload_source else None,
+        waveform_for=cycle,
     )
 
 

@@ -52,6 +52,7 @@ class SimController:
         self.tune_source: str | None = None
         self.packets = None  # PacketMonitor, quando houver
         self.station_tuning = None  # StationTuningMonitor, quando houver
+        self.uplink = None  # UplinkStation (o satélite ouvindo a :5559), quando houver
         # De onde o Doppler da órbita é calculado. As mesmas GS_* da estação.
         self.station = orbit.GroundStation.from_environment()
         # Trocável nos testes: é a única parte que vai à rede.
@@ -169,8 +170,18 @@ class SimController:
         state["fs2_period_s"] = period
         state["packets"] = None if self.packets is None else self.packets.snapshot()
         state["station_tuning"] = self._station_comparison(state["emitters"])
+        state["uplink"] = self._uplink_state()
 
         return state
+
+    def _uplink_state(self) -> dict | None:
+        fs2 = self._fs2()
+        responses = None if fs2 is None else {
+            "queued": fs2.queued_responses, "sent": fs2.responses_sent}
+        if self.uplink is None:
+            # O sim da UHF não recebe uplink, mas transmite respostas.
+            return None if not responses or not responses["sent"] else {"responses": responses}
+        return {**self.uplink.snapshot(), "responses": responses}
 
     def _station_comparison(self, emitters: list[dict]) -> dict | None:
         """O Doppler que a estação anuncia ao lado do que o simulador impõe.
@@ -245,12 +256,17 @@ class SimController:
 
         unknown = set(changes) - {
             "tune_hz", "snr_db", "emitters", "doppler", "orbit", "reset_packets",
-            "fs2_mode", "send_packets",
+            "fs2_mode", "send_packets", "uplink",
         }
         if unknown:
             raise ValueError(f"campo desconhecido: {', '.join(sorted(unknown))}")
 
         actions = []
+
+        if "uplink" in changes:
+            if self.uplink is None:
+                raise ValueError("este simulador não recebe uplink (sem --tx-bind)")
+            actions += self.uplink.apply(changes["uplink"])
 
         if changes.get("reset_packets") is True:
             def reset_counts():

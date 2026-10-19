@@ -244,6 +244,47 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
     )
 
 
+def start_uplink(args: argparse.Namespace, controller: SimController):
+    """Liga o satélite simulado: o TX da :5559 e/ou o caminho das respostas.
+
+    :return: o `respond(radio, quadro)` em uso, para o monitor de pacotes saber
+    que respostas vão passar pelo detector.
+    """
+    from sdr_sim import uplink
+    from sdr_sim.satellite import SatelliteModel, load_keys
+
+    fs2 = controller.emitter("fs2")
+    publisher = uplink.ResponsePublisher(args.responses_bind) if args.responses_bind else None
+
+    def respond(radio: str, frame: bytes) -> None:
+        if radio == args.responses_channel:
+            fs2.enqueue(frame)          # o próprio rádio: direto na fila
+        elif publisher is not None:
+            publisher.publish(radio, frame)
+        else:
+            print(f"[sdr-sim] resposta pela {radio.upper()} descartada: sem --responses-bind",
+                  flush=True)
+
+    if args.tx_bind:
+        keys = load_keys(args.sat_keys_file)
+        station = uplink.UplinkStation(
+            SatelliteModel(keys), controller,
+            nominal_hz=args.uplink_frequency or args.fs2_frequency, baud=args.uplink_baud,
+            respond=respond, shutdown=_shutdown,
+            tolerance_hz=args.uplink_tolerance_hz or uplink.DEFAULT_TOLERANCE_HZ,
+            rx_max_bytes=args.tc_rx_max_bytes)
+        controller.uplink = station
+        uplink.TxServer(args.tx_bind, station, _shutdown).start()
+        print(f"[sdr-sim] satélite simulado ouvindo uplink em {station.nominal_hz / 1e6:.4f} MHz, "
+              f"{args.uplink_baud} baud, {len(keys)} chave(s)", flush=True)
+
+    if args.responses_source:
+        uplink.ResponseListener(args.responses_source, args.responses_channel, fs2.enqueue,
+                                _shutdown).start()
+
+    return respond
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
 
@@ -330,8 +371,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "que chega lá contra o que foi transmitido. Omitido = sem "
                              "conferência.")
 
+    # --- uplink: o satélite simulado ouvindo a estação ------------------------
+    parser.add_argument("--tx-bind", default=None,
+                        help="REP do TX (contrato da :5559, o mesmo do grs-iq-rx/usrp): o "
+                             "grs-uplink manda a rajada e o satélite simulado a recebe. "
+                             "Omitido = sem uplink. Exemplo: tcp://*:5559")
+    parser.add_argument("--uplink-frequency", type=float, default=None,
+                        help="Frequência em que o rádio de bordo ouve, em Hz. Padrão: "
+                             "--fs2-frequency (o FS-2 ouve no TTC_1, a mesma da VHF)")
+    parser.add_argument("--uplink-baud", type=int, default=1200)
+    parser.add_argument("--uplink-tolerance-hz", type=float, default=None,
+                        help="Residual de frequência que o rádio de bordo ainda ouve. Um "
+                             "modelo, não uma medida do Si446x. Padrão 1500 Hz.")
+    parser.add_argument("--tc-rx-max-bytes", type=int, default=0,
+                        help="Bytes que o rádio de bordo lê depois do syncword (o 80 do "
+                             "uplink_manager.c v1.0, TODO-1). 0 = sem limite.")
+    parser.add_argument("--sat-keys-file", default=None,
+                        help="Chaves HMAC do satélite simulado (o mesmo JSON do grs-uplink). "
+                             "Sem arquivo, todo TC privado é rejeitado.")
+    parser.add_argument("--responses-bind", default=None,
+                        help="PUB das respostas do satélite, tópico = rádio (vhf/uhf). Só no "
+                             "simulador que recebe o uplink. Exemplo: tcp://*:5567")
+    parser.add_argument("--responses-source", default=None,
+                        help="SUB das respostas: as do rádio --responses-channel entram na "
+                             "próxima rajada deste simulador. Exemplo: tcp://grs-sdr-sim:5567")
+    parser.add_argument("--responses-channel", default=None,
+                        help="Rádio que este simulador transmite (vhf/uhf). Padrão: "
+                             "--station-tuning-channel, ou vhf.")
+
     args = parser.parse_args(argv)
     args.emitters = [name.strip() for name in args.emitters.split(",") if name.strip()]
+    args.responses_channel = (args.responses_channel or args.station_tuning_channel or "vhf").lower()
 
     unknown = set(args.emitters) - {"fs2", "fm", "carrier"}
     if unknown:
@@ -397,11 +467,23 @@ def main(argv: list[str] | None = None) -> int:
             args.station_tuning_source, _shutdown, channel=args.station_tuning_channel)
         controller.station_tuning.start()
 
+    respond = None
+    if args.tx_bind or args.responses_source:
+        respond = start_uplink(args, controller)
+
     if args.packets_source:
         # Import tardio: sem --packets-source, nada disto é carregado.
         from sdr_sim.packets import PacketMonitor
 
-        controller.packets = PacketMonitor(args.packets_source, packet_check(args), _shutdown)
+        check = packet_check(args)
+        if respond is not None:
+            # As respostas do satélite passam pelo mesmo detector: não são divergência.
+            from sdr_sim.uplink import is_response_frame
+
+            base = check
+            check = (lambda payload: (base(payload) if callable(base)
+                                      else payload[: len(base)] == base) or is_response_frame(payload))
+        controller.packets = PacketMonitor(args.packets_source, check, _shutdown)
         controller.packets.start()
 
     panel = None
