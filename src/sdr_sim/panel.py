@@ -1,13 +1,14 @@
-"""Painel web do simulador: uma página e três rotas JSON.
+"""Painel web do simulador: uma página e quatro rotas JSON.
 
 Biblioteca padrão só (`http.server`), de propósito: o simulador tem duas
 dependências e continua com duas. Um framework web para servir uma página e
-três rotas seria mais peso do que o próprio simulador.
+quatro rotas seria mais peso do que o próprio simulador.
 
-    GET  /               a página
-    GET  /api/state      sintonia, SNR, emissores, Doppler, pacotes
-    GET  /api/spectrum   espectro do último bloco, em dB
-    POST /api/control    muda o simulador (ver SimController.apply)
+    GET  /                  a página
+    GET  /api/state         sintonia, SNR, emissores, Doppler, pacotes
+    GET  /api/spectrum      espectro do último bloco, em dB
+    GET  /api/uplink/burst  espectro e cascata da última rajada de uplink ({} sem rajada)
+    POST /api/control       muda o simulador (ver SimController.apply)
 
 Sem autenticação: é ferramenta de bancada. O compose publica a porta só em
 127.0.0.1 — quem alcança o painel já está na máquina.
@@ -57,6 +58,8 @@ def make_handler(controller: SimController) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.OK, controller.state())
             elif self.path == "/api/spectrum":
                 self._json(HTTPStatus.OK, controller.spectrum_db())
+            elif self.path == "/api/uplink/burst":
+                self._json(HTTPStatus.OK, controller.uplink_view() or {})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "rota desconhecida"})
 

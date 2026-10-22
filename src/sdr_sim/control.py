@@ -183,6 +183,10 @@ class SimController:
             return None if not responses or not responses["sent"] else {"responses": responses}
         return {**self.uplink.snapshot(), "responses": responses}
 
+    def uplink_view(self) -> dict | None:
+        """Espectro e cascata da última rajada de uplink, ou None sem uplink/rajada."""
+        return None if self.uplink is None else self.uplink.last_view()
+
     def _station_comparison(self, emitters: list[dict]) -> dict | None:
         """O Doppler que a estação anuncia ao lado do que o simulador impõe.
 

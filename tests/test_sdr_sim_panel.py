@@ -370,6 +370,15 @@ def test_pagina_e_servida(panel):
     assert b"GRS SDR Sim" in body
 
 
+def test_vista_do_uplink_sem_rajada_e_objeto_vazio(panel):
+    _, base = panel
+    status, body = http("GET", base + "/api/uplink/burst")
+
+    assert status == 200
+    assert json.loads(body) == {}
+    assert b'id="up-spec"' in http("GET", base + "/")[1]
+
+
 def test_state_e_spectrum_respondem_json(panel):
     _, base = panel
 

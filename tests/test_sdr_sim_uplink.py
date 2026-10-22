@@ -25,7 +25,7 @@ from sdr_sim import fs2_frames, modulation, uplink_rx
 from sdr_sim.control import SimController
 from sdr_sim.satellite import SatelliteModel
 from sdr_sim.spectrum import VirtualSpectrum
-from sdr_sim.uplink import TxServer, UplinkStation, is_response_frame
+from sdr_sim.uplink import VIEW_NFFT, TxServer, UplinkStation, burst_view, is_response_frame
 
 RATE = 240_000
 BAUD = 1200
@@ -212,6 +212,48 @@ def test_doppler_corrigido_e_ouvido_sem_correcao_nao():
 
     uplink.handle_burst(*burst(ping(), NOMINAL - 3000.0))[1]()
     assert [radio for radio, _ in sent] == ["vhf"]
+
+
+def centroid_hz(view) -> float:
+    """Centro de massa do espectro médio da vista, em Hz em torno da nominal."""
+    db = np.array(view["spectrum_db"])
+    freqs = view["freq_start_hz"] + view["freq_step_hz"] * np.arange(len(db))
+    linear = 10.0 ** (db / 10.0)
+    return float(np.sum(freqs * linear) / np.sum(linear))
+
+
+@pytest.mark.parametrize("offset_hz", [0.0, 2500.0, -4000.0])
+def test_vista_da_rajada_poe_o_sinal_no_deslocamento(offset_hz):
+    """O GMSK é simétrico em torno da portadora: o centro de massa do espectro
+    cai onde a rajada chegou, a menos de um bin."""
+    iq = uplink_iq(ping())
+    view = burst_view(iq, RATE, offset_hz, 8000.0)
+
+    assert centroid_hz(view) == pytest.approx(offset_hz, abs=view["freq_step_hz"])
+    assert max(view["spectrum_db"]) <= 0.0 and min(view["spectrum_db"]) >= -80.0
+    assert len(view["waterfall_db"]) == len(iq) // VIEW_NFFT
+    assert {len(row) for row in view["waterfall_db"]} == {len(view["spectrum_db"])}
+
+
+def test_rajada_curta_ainda_tem_uma_linha():
+    view = burst_view(uplink_iq(ping())[:VIEW_NFFT // 2], RATE, 0.0, 8000.0)
+
+    assert len(view["waterfall_db"]) == 1
+
+
+def test_painel_guarda_a_vista_da_ultima_rajada_com_o_residual():
+    """Sem correção, o satélite vindo a +3 kHz ouve a rajada 3 kHz acima da
+    nominal: fora da tolerância, e é ali que a vista a mostra."""
+    uplink, controller, _ = station(doppler=FixedDoppler(3000.0))
+    assert controller.uplink_view() is None
+
+    uplink.handle_burst(*burst(ping(), NOMINAL, burst_id="9"))[1]()
+
+    view = controller.uplink_view()
+    assert (view["burst_id"], view["offset_hz"], view["heard"]) == ("9", 3000.0, False)
+    assert "fora da banda" in view["outcome"]
+    assert view["duration_s"] == round(len(uplink_iq(ping())) / RATE, 3)
+    assert centroid_hz(view) == pytest.approx(3000.0, abs=view["freq_step_hz"])
 
 
 def test_abaixo_do_horizonte_nao_ouve():

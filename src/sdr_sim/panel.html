@@ -249,6 +249,13 @@
           <button id="up-drop">Ignorar o próximo</button>
         </div>
         <div class="meta" id="up-inject"></div>
+        <div class="sub">Última rajada, como o rádio de bordo a recebe</div>
+        <div class="meta" id="up-view-meta">Nenhuma rajada ainda.</div>
+        <canvas id="up-spec" style="height:120px;margin-top:6px"></canvas>
+        <canvas id="up-fall" style="height:120px;margin-top:6px"></canvas>
+        <p class="hint">Eixo em kHz em torno da nominal de bordo. A faixa verde é a tolerância do
+          rádio de bordo; a linha tracejada, onde a rajada chegou. Na cascata, o tempo corre de cima
+          para baixo, uma linha a cada <span id="up-view-row">–</span> ms.</p>
         <table>
           <thead><tr><th>TC</th><th>de</th><th>B</th><th>o que o OBDH fez</th></tr></thead>
           <tbody id="up-tcs"></tbody>
@@ -380,7 +387,93 @@ function renderUplink(u) {
   fillTable("up-bursts-table", u.recent_bursts.map((b) => [b.burst_id, mhz(b.tx_freq_hz),
     b.residual_hz === null ? "–" : (b.residual_hz >= 0 ? "+" : "") + b.residual_hz.toFixed(0) + " Hz",
     b.outcome]));
+  // A vista da rajada é pesada: só é buscada quando chega uma rajada nova.
+  if (u.bursts !== viewBursts) { viewBursts = u.bursts; loadBurstView(); }
 }
+
+// --- a última rajada de uplink ------------------------------------------------
+
+let viewBursts = null;
+let burstView = null;
+
+async function loadBurstView() {
+  try {
+    const response = await fetch("/api/uplink/burst");
+    const view = await response.json();
+    if (view && view.spectrum_db) { burstView = view; drawBurstView(); }
+  } catch (error) { /* o pollState já mostra a falta de conexão */ }
+}
+
+function drawBurstView() {
+  const v = burstView;
+  if (!v) return;
+  const sign = (hz) => (hz >= 0 ? "+" : "") + hz.toFixed(0);
+  $("up-view-meta").textContent = `rajada ${v.burst_id} · ${v.duration_s.toFixed(2)} s · TX ${mhz(v.tx_freq_hz)} MHz · `
+    + `a bordo ${sign(v.offset_hz)} Hz da nominal · ${v.outcome}`;
+  $("up-view-meta").className = "meta " + (v.heard ? "ok" : "warn");
+  $("up-view-row").textContent = (v.row_seconds * 1000).toFixed(1);
+
+  const n = v.spectrum_db.length;
+  const fmin = v.freq_start_hz, fmax = v.freq_start_hz + v.freq_step_hz * (n - 1);
+  const ratio = window.devicePixelRatio || 1;
+
+  // espectro médio da rajada
+  const spec = $("up-spec");
+  fitCanvas(spec);
+  let ctx = spec.getContext("2d");
+  let W = spec.width, H = spec.height;
+  const x = (hz) => ((hz - fmin) / (fmax - fmin)) * W;
+  const y = (db) => 4 * ratio + (-db / 80) * (H - 8 * ratio);
+  ctx.fillStyle = "#05080c";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(63, 185, 80, 0.15)";
+  ctx.fillRect(x(-v.tolerance_hz), 0, x(v.tolerance_hz) - x(-v.tolerance_hz), H);
+  ctx.font = `${11 * ratio}px ui-monospace, monospace`;
+  ctx.strokeStyle = "#1a2230";
+  ctx.fillStyle = "#5c6b80";
+  ctx.lineWidth = 1;
+  for (let db = 0; db >= -80; db -= 20) {
+    ctx.beginPath(); ctx.moveTo(0, y(db)); ctx.lineTo(W, y(db)); ctx.stroke();
+    ctx.fillText(db + " dB", 4 * ratio, y(db) - 3 * ratio);
+  }
+  const tick = (fmax - fmin) > 20000 ? 5000 : 2000;
+  for (let hz = Math.ceil(fmin / tick) * tick; hz <= fmax; hz += tick) {
+    ctx.beginPath(); ctx.moveTo(x(hz), 0); ctx.lineTo(x(hz), H); ctx.stroke();
+    ctx.fillText((hz > 0 ? "+" : "") + (hz / 1000) + " kHz", x(hz) + 3 * ratio, H - 4 * ratio);
+  }
+  ctx.setLineDash([4 * ratio, 4 * ratio]);
+  ctx.strokeStyle = v.heard ? "#3fb950" : "#d29922";
+  ctx.beginPath(); ctx.moveTo(x(v.offset_hz), 0); ctx.lineTo(x(v.offset_hz), H); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "#4cc2ff";
+  ctx.lineWidth = 1.5 * ratio;
+  ctx.beginPath();
+  v.spectrum_db.forEach((db, i) => {
+    const px = x(fmin + i * v.freq_step_hz), py = y(db);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  // cascata: uma linha por bloco, de cima para baixo
+  const fall = $("up-fall");
+  fitCanvas(fall);
+  ctx = fall.getContext("2d");
+  W = fall.width; H = fall.height;
+  if (!W || !H) return;       // cartão oculto: createImageData recusa largura zero
+  const rows = v.waterfall_db.length;
+  const image = ctx.createImageData(W, H);
+  for (let py = 0; py < H; py++) {
+    const row = v.waterfall_db[Math.min(rows - 1, Math.floor((py / H) * rows))];
+    for (let px = 0; px < W; px++) {
+      const [r, g, b] = colormap((row[Math.floor((px / W) * n)] + 80) / 80);
+      const p = (py * W + px) * 4;
+      image.data[p] = r; image.data[p + 1] = g; image.data[p + 2] = b; image.data[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+window.addEventListener("resize", drawBurstView);
 
 function renderTransmission(tx, fs2) {
   if (!tx) return;

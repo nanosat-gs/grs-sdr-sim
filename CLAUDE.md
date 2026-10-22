@@ -22,7 +22,7 @@ orbit.py        Doppler da órbita real: TLE, estação, geometria própria, pas
 station_tuning.py  escuta o Doppler anunciado na :5581 — só para comparar
 spectrum.py     soma os emissores na banda-base do receptor; sintonia e ruído
 control.py      SimController: estado mutável sob UMA trava (laço, tune, painel)
-panel.py        painel web (http.server): GET /api/state, /api/spectrum, POST /api/control
+panel.py        painel web (http.server): GET /api/state, /api/spectrum, /api/uplink/burst, POST /api/control
 panel.html      a página do painel, servida de dentro do pacote
 packets.py      assina :5558 e confere o payload contra o que foi transmitido
 main.py         serviço: PUB :5556, SUB :5557 tune, ritmo de tempo real

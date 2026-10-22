@@ -38,10 +38,55 @@ from sdr_sim.satellite import SatelliteModel
 DEFAULT_TOLERANCE_HZ = 1500.0
 MAX_BURST_SECONDS = 10.0
 RECENT = 20
+# A vista da rajada no painel: 2048 amostras por linha da cascata (8,5 ms e
+# ~117 Hz por bin a 240 kS/s), o eixo cortado em ±VIEW_SPAN_HZ (ou ±2x a
+# tolerância, o que for maior) e o piso em -80 dB do pico.
+VIEW_NFFT = 2048
+VIEW_SPAN_HZ = 8000.0
+VIEW_FLOOR_DB = -80.0
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def burst_view(iq: np.ndarray, sample_rate: int, offset_hz: float, span_hz: float,
+               nfft: int = VIEW_NFFT) -> dict[str, Any]:
+    """Espectro e cascata de uma rajada como o rádio de bordo a recebe.
+
+    O IQ chega em banda-base, centrado na frequência de TX. A bordo ele aparece
+    deslocado de `offset_hz` (TX + Doppler - nominal): o eixo é em torno da
+    nominal do satélite, onde a faixa de tolerância faz sentido.
+
+    Uma linha da cascata por bloco de `nfft` amostras, com janela de Hann; o
+    espectro é a média das linhas. dB relativos ao pico e cortados no piso: a
+    rajada chega sem ruído, e o piso de verdade seria -200 dB.
+    """
+    rows = max(1, len(iq) // nfft)
+    samples = np.zeros(rows * nfft, dtype=np.complex64)
+    used = min(len(iq), rows * nfft)
+    samples[:used] = iq[:used]
+    n = np.arange(rows * nfft)
+    shifted = samples * np.exp(2j * np.pi * offset_hz * n / sample_rate)
+
+    window = np.hanning(nfft)
+    power = np.abs(np.fft.fftshift(np.fft.fft(shifted.reshape(rows, nfft) * window, axis=1),
+                                   axes=1)) ** 2
+    freqs = np.fft.fftshift(np.fft.fftfreq(nfft, 1.0 / sample_rate))
+    keep = np.abs(freqs) <= span_hz
+    power = power[:, keep]
+    peak = float(power.max()) or 1e-30
+
+    def to_db(values: np.ndarray) -> np.ndarray:
+        return np.clip(10.0 * np.log10(values / peak + 1e-20), VIEW_FLOOR_DB, 0.0)
+
+    return {
+        "freq_start_hz": float(freqs[keep][0]),
+        "freq_step_hz": sample_rate / nfft,
+        "row_seconds": nfft / sample_rate,
+        "spectrum_db": np.round(to_db(power.mean(axis=0)), 1).tolist(),
+        "waterfall_db": np.round(to_db(power)).astype(int).tolist(),
+    }
 
 
 class UplinkStation:
@@ -57,9 +102,11 @@ class UplinkStation:
         self.tolerance_hz = tolerance_hz
         self.rx_max_bytes = rx_max_bytes
         self.tx_enabled = True
+        self.view_span_hz = max(VIEW_SPAN_HZ, 2.0 * tolerance_hz)
         self._lock = threading.Lock()
         self.bursts = 0
         self._recent: deque[dict[str, Any]] = deque(maxlen=RECENT)
+        self._last_view: dict[str, Any] | None = None
 
     # --- a :5559 -----------------------------------------------------------------
 
@@ -121,7 +168,23 @@ class UplinkStation:
                     self._respond(response.radio, fs2_frames.ngham_frame(response.packet))
                     responses.append(response)
 
+        # Abaixo do horizonte não há Doppler calculado: a vista mostra a rajada
+        # onde ela sairia sem ele, só para o painel.
+        offset = residual if residual is not None else tx_freq - self.nominal_hz
+        view = {
+            "burst_id": burst_id,
+            "at": round(time.time(), 1),
+            "tx_freq_hz": tx_freq,
+            "offset_hz": round(offset, 1),
+            "duration_s": round(len(iq) / sample_rate, 3),
+            "heard": heard,
+            "outcome": why,
+            "tolerance_hz": self.tolerance_hz,
+            **burst_view(iq, sample_rate, offset, self.view_span_hz),
+        }
+
         with self._lock:
+            self._last_view = view
             self.bursts += 1
             self._recent.appendleft({
                 "at": round(time.time(), 1),
@@ -170,6 +233,16 @@ class UplinkStation:
                 "recent_bursts": list(self._recent),
                 "satellite": self.satellite.snapshot(),
             }
+
+    def last_view(self) -> dict[str, Any] | None:
+        """Espectro e cascata da última rajada (`burst_view`), para o painel.
+
+        Fora do `snapshot` de propósito: são alguns milhares de números, e o
+        painel consulta o estado várias vezes por segundo. Ele só busca a vista
+        quando o contador de rajadas muda.
+        """
+        with self._lock:
+            return self._last_view
 
 
 class TxServer(threading.Thread):
