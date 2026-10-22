@@ -47,6 +47,9 @@ python -m sdr_sim.main --orbit-norad 25544 --orbit-mode next-pass
 
 # o oscilador do satélite errado em +1200 Hz: o que o ajuste fino da estação tem de achar
 python -m sdr_sim.main --orbit-norad 25544 --fs2-offset-hz 1200
+
+# um General Telemetry (0x10) do FS-2 em quadro NGHam de verdade, a 4800 baud
+python -m sdr_sim.main --frame general-telemetry --baud 4800
 ```
 
 No compose: `SIM_ORBIT_NORAD=25544` (e `SIM_ORBIT_MODE=next-pass`, se quiser)
@@ -67,13 +70,27 @@ Cada um segue o `tune` do sintetizador do seu rádio e, com
 `--station-tuning-channel vhf|uhf`, compara o próprio Doppler com o do canal
 dele na :5581 (`doppler.vhf`, `doppler.uhf`).
 
-### O payload é embaralhado, como no satélite
+### O que o FS-2 transmite: `--frame`
 
-O FS-2 manda `00 01 02 ...` embaralhado com a sequência CCSDS (a mesma tabela
-`ccsds_poly` do firmware do TTC 2.0, ver `emitters.ccsds_scramble`). Sem
-embaralhar, o payload tinha 37,5% de uns e enviesava em −50 Hz a medida do
-bloco FFT — o satélite real embaralha, então o simulador também. Ainda não há
-quadro NGHam de verdade (size tag, Reed-Solomon).
+| Modo | Depois do syncword | Para quê |
+|---|---|---|
+| `pattern` (padrão) | `00 01 02 ...` embaralhado com a sequência CCSDS. **Não é NGHam**: sem size tag nem Reed-Solomon | O DSP: demodulador e detector |
+| `general-telemetry` | Um General Telemetry (`0x10`) do FS-2 em **quadro NGHam de verdade**, montado com o PyNGHam (`fs2_frames.py`) | O caminho inteiro, até a telemetria decodificada pelo `grs-telemetry-decoder` |
+
+No compose, o simulador VHF usa `pattern` e o UHF, `general-telemetry`
+(`SIM_UHF_FRAME`).
+
+No `general-telemetry`, cada rajada leva um pacote novo: o relógio do satélite
+é o da máquina, a página do log de dados conta as rajadas, e temperaturas,
+bateria e painéis variam numa senoide de 5 min. Com `--frame-timestamp` o
+pacote volta a ser fixo, para uma corrida reproduzível. O layout do `0x10` é
+reescrito aqui, sem importar o decoder: se os dois divergirem, o teste ponta a
+ponta do `grs-station` acusa.
+
+O `pattern` é embaralhado com a mesma tabela `ccsds_poly` do firmware do TTC
+2.0 (ver `emitters.ccsds_scramble`). Sem embaralhar, o payload tinha 37,5% de
+uns e enviesava em −50 Hz a medida do bloco FFT — o satélite real embaralha,
+então o simulador também.
 
 ## Painel de controle
 
