@@ -254,6 +254,8 @@ def start_uplink(args: argparse.Namespace, controller: SimController):
     from sdr_sim.satellite import SatelliteModel, load_keys
 
     fs2 = controller.emitter("fs2")
+    if args.bench:
+        return start_bench(args, controller)
     publisher = uplink.ResponsePublisher(args.responses_bind) if args.responses_bind else None
 
     def respond(radio: str, frame: bytes) -> None:
@@ -283,6 +285,47 @@ def start_uplink(args: argparse.Namespace, controller: SimController):
                                 _shutdown).start()
 
     return respond
+
+
+def start_bench(args: argparse.Namespace, controller: SimController):
+    """Liga o modo bancada: a :5559 vai ao rádio do Pi, e o que ele recebe vira IQ.
+
+    O FS-2 deste simulador cala (modo manual, sem pedido): o que sai no ar é só
+    o que o rádio recebeu. O `satellite.py` não entra.
+
+    :return: None — não há "resposta do satélite" local para o monitor de pacotes.
+    """
+    from sdr_sim import bench
+
+    fs2 = controller.emitter("fs2")
+    fs2.continuous = False
+    channel = args.responses_channel
+
+    if args.bench_radio:
+        client = bench.RadioClient(args.bench_radio)
+        monitor = bench.RadioMonitor(client, _shutdown)
+        controller.bench_monitor = monitor
+        monitor.start()
+        if args.tx_bind:
+            from sdr_sim import uplink
+
+            station = bench.BenchUplinkStation(
+                controller, nominal_hz=args.uplink_frequency or args.fs2_frequency,
+                baud=args.uplink_baud, radio=client, shutdown=_shutdown, monitor=monitor,
+                channel=channel)
+            controller.uplink = station
+            uplink.TxServer(args.tx_bind, station, _shutdown).start()
+            print(f"[sdr-sim] MODO BANCADA: a :5559 vai ao rádio {args.bench_radio} "
+                  f"(canal {channel}, {args.uplink_baud} baud)", flush=True)
+
+    if args.bench_rx:
+        receiver = bench.BenchReceiver(args.bench_rx, channel, fs2.enqueue, _shutdown)
+        controller.bench_receiver = receiver
+        receiver.start()
+        print(f"[sdr-sim] MODO BANCADA: quadros {channel.upper()} do rádio viram IQ aqui",
+              flush=True)
+
+    return None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -399,6 +442,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Rádio que este simulador transmite (vhf/uhf). Padrão: "
                              "--station-tuning-channel, ou vhf.")
 
+    # --- modo bancada: o modem do rádio da bancada (bench.py) -----------------
+    parser.add_argument("--bench-radio", default=None,
+                        help="API do serviço do rádio da bancada (REQ). Com --tx-bind, a :5559 "
+                             "demodula a rajada e manda o quadro a este rádio, no lugar do "
+                             "satélite simulado. Exemplo: tcp://127.0.0.1:5600")
+    parser.add_argument("--bench-rx", default=None,
+                        help="PUB dos quadros que o rádio da bancada recebe: os do canal deste "
+                             "simulador viram IQ na cadeia. Exemplo: tcp://127.0.0.1:5601")
+
     args = parser.parse_args(argv)
     args.emitters = [name.strip() for name in args.emitters.split(",") if name.strip()]
     args.responses_channel = (args.responses_channel or args.station_tuning_channel or "vhf").lower()
@@ -406,6 +458,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     unknown = set(args.emitters) - {"fs2", "fm", "carrier"}
     if unknown:
         parser.error(f"emissor desconhecido: {', '.join(sorted(unknown))}")
+
+    args.bench = bool(args.bench_radio or args.bench_rx)
+    if args.bench:
+        if args.responses_channel not in ("vhf", "uhf"):
+            parser.error("modo bancada: --responses-channel precisa ser vhf ou uhf")
+        if args.tx_bind and not args.bench_radio:
+            parser.error("modo bancada com --tx-bind precisa de --bench-radio")
+        if args.responses_bind or args.responses_source or args.sat_keys_file:
+            parser.error("modo bancada: quem responde é a Bluepill; --responses-bind, "
+                         "--responses-source e --sat-keys-file não se aplicam")
 
     return args
 
@@ -468,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         controller.station_tuning.start()
 
     respond = None
-    if args.tx_bind or args.responses_source:
+    if args.tx_bind or args.responses_source or args.bench:
         respond = start_uplink(args, controller)
 
     if args.packets_source:
@@ -476,7 +538,13 @@ def main(argv: list[str] | None = None) -> int:
         from sdr_sim.packets import PacketMonitor
 
         check = packet_check(args)
-        if respond is not None:
+        if args.bench:
+            # No modo bancada o que passa pelo detector veio do ar: qualquer
+            # quadro NGHam válido é legítimo.
+            from sdr_sim.bench import is_ngham_frame
+
+            check = is_ngham_frame
+        elif respond is not None:
             # As respostas do satélite passam pelo mesmo detector: não são divergência.
             from sdr_sim.uplink import is_response_frame
 

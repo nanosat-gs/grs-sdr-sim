@@ -110,26 +110,42 @@ class UplinkStation:
 
     # --- a :5559 -----------------------------------------------------------------
 
-    def handle_burst(self, header: dict[str, Any], iq_bytes: bytes):
-        """:return: (resposta ao grs-uplink, o que fazer depois de responder)."""
-        burst_id = str(header.get("burst_id"))
-
+    @staticmethod
+    def _reply_for(burst_id: str):
         def reply(status: str, detail: str | None = None, **extra) -> dict[str, Any]:
             return {"burst_id": burst_id, "status": status, "detail": detail, **extra}
+        return reply
 
+    def _parse_burst(self, header: dict[str, Any], iq_bytes: bytes):
+        """Valida o pedido da :5559.
+
+        :return: (reply, iq, sample_rate, tx_freq, recusa); `recusa` é a
+        resposta pronta quando o pedido não pode seguir, senão None.
+        """
+        reply = self._reply_for(str(header.get("burst_id")))
         try:
             sample_rate = int(header["sample_rate"])
             tx_freq = float(header["tx_freq_hz"])
         except (KeyError, TypeError, ValueError):
-            return reply("error", "header sem sample_rate/tx_freq_hz"), None
+            return reply, None, 0, 0.0, reply("error", "header sem sample_rate/tx_freq_hz")
         if len(iq_bytes) % 8 or not iq_bytes:
-            return reply("error", "IQ precisa ser cf32_le (8 bytes por amostra)"), None
+            return reply, None, 0, 0.0, reply("error", "IQ precisa ser cf32_le (8 bytes por amostra)")
         iq = np.frombuffer(iq_bytes, dtype=np.complex64)
         duration = len(iq) / sample_rate
         if duration > MAX_BURST_SECONDS:
-            return reply("error", f"rajada de {duration:.1f} s; o limite é {MAX_BURST_SECONDS:.0f} s"), None
+            return reply, None, 0, 0.0, reply(
+                "error", f"rajada de {duration:.1f} s; o limite é {MAX_BURST_SECONDS:.0f} s")
         if not self.tx_enabled:
-            return reply("tx_disabled", "TX desligado no painel do simulador"), None
+            return reply, None, 0, 0.0, reply("tx_disabled", "TX desligado no painel do simulador")
+        return reply, iq, sample_rate, tx_freq, None
+
+    def handle_burst(self, header: dict[str, Any], iq_bytes: bytes):
+        """:return: (resposta ao grs-uplink, o que fazer depois de responder)."""
+        burst_id = str(header.get("burst_id"))
+        reply, iq, sample_rate, tx_freq, refusal = self._parse_burst(header, iq_bytes)
+        if refusal is not None:
+            return refusal, None
+        duration = len(iq) / sample_rate
 
         started = _now_iso()
         # O rádio de verdade só confirma depois de a rajada sair inteira.

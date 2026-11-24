@@ -29,6 +29,9 @@ main.py         serviço: PUB :5556, SUB :5557 tune, ritmo de tempo real
 satellite.py    o OBDH recebendo TCs: o process_tc.c v1.0 (Ping, Activate/Deactivate Module)
 uplink_rx.py    o rádio de bordo: IQ GMSK -> bits -> syncword -> NGHam
 uplink.py       REP :5559 (TX, contrato do grs-iq-rx/usrp), Doppler/horizonte, PUB/SUB :5567 das respostas
+bench.py        modo bancada: a :5559 vai ao rádio do Pi (Si4463), e o que ele recebe vira IQ
+bench_radio_stub.py  rádio falso da bancada: a API do rádio, respondida pelo satellite.py
+gateway.py      na estação: o nome do rádio (grs-iq-rx), repassando IQ, :5559 e tune ao Pi
 ```
 
 ## Decisões, e por quê
@@ -174,4 +177,38 @@ próximo com o código X", "ignorar o próximo".
 - **Com `--orbit-mode next-pass` o uplink não fecha:** o relógio do satélite
   está adiantado e o Doppler que a estação corrige não é o que o simulador
   impõe. Para exercitar o uplink, órbita em tempo real ou sem órbita.
+
+## Modo bancada (bancada RF, etapa 1)
+
+Com `--bench-radio`/`--bench-rx`, o simulador roda **no Raspberry Pi** da
+bancada e vira o modem do Si4463: demodula a rajada da :5559 e manda o quadro
+ao serviço do rádio (`bancada-rf`), e o que o rádio recebe entra na fila do
+emissor fs2 da cadeia do canal. Na estação, o `gateway.py` fica com o nome e
+o IP do rádio. Uso e API no README, "Modo bancada"; a task é
+`azure-devops/task-bancada-e1-estacao.md`.
+
+**Decisões:**
+- **Vai ao ar o quadro RECODIFICADO, não o cru.** A rajada acaba no último
+  símbolo, e o filtro gaussiano deixa o último bit sem cauda: o receptor erra
+  esse bit em ~metade dos TCs (medido), e o RS corrige. Repassar o cru poria
+  no ar um erro que a estação não cometeu, gastando a margem de correção da
+  Bluepill. A forma de onda continua conferida (tem de decodificar), e os bits
+  corrigidos ficam no `detail` e no painel.
+- **O `ack` só sai com a confirmação do rádio, com os horários dele.** É o
+  que faz o `uplink_transmissions` gravar o que o rádio fez.
+- **Rádio fora: `error` na hora, com o motivo.** O `RadioMonitor` pergunta
+  `health` a cada 2 s; o gateway, do lado da estação, decide pelo IQ (sem IQ
+  há mais de 3 s = Pi fora). Nos dois casos o TC volta à fila sem esperar o
+  prazo inteiro.
+- **A modulação fica fora do laço de geração.** No Pi, modular um `0x10` a
+  1200 baud leva ~0,75 s; o `BenchReceiver` chama `enqueue` na thread dele.
+- **Injeção de falha é da Bluepill.** `fail_next`/`drop_next` pelo painel
+  são recusados no modo bancada; no rádio falso, pela op `sat`.
+
+**Armadilhas:**
+- **O modo bancada recusa `--responses-bind`, `--responses-source` e
+  `--sat-keys-file`.** São do satélite simulado; aceitá-los deixaria dois
+  "satélites" respondendo.
+- **O `burst_id` volta como texto** em toda resposta da :5559 (simulador,
+  gateway, USRP). O gateway converte.
 

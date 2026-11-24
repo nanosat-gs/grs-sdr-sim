@@ -269,6 +269,27 @@
           uplink aparece.</p>
       </div>
     </div>
+    <div class="card" id="bench-card" hidden>
+      <h2>Rádio da bancada (Si4463 no Pi)</h2>
+      <div class="stats">
+        <div><b class="big" id="bn-state">–</b><span>rádio</span></div>
+        <div><b class="big" id="bn-listen">–</b><span>escutando</span></div>
+        <div><b class="big" id="bn-rx">0</b><span>quadros deste canal</span></div>
+      </div>
+      <div class="meta" id="bn-meta"></div>
+      <div class="sub">TCs mandados ao rádio (:5559)</div>
+      <table>
+        <thead><tr><th>rajada</th><th>pacotes</th><th>início no rádio</th><th>resultado</th></tr></thead>
+        <tbody id="bn-tx"></tbody>
+      </table>
+      <div class="sub">Quadros que o rádio recebeu neste canal (viram IQ aqui)</div>
+      <table>
+        <thead><tr><th>hora (UTC)</th><th>pacote</th><th>B</th><th>RSSI</th></tr></thead>
+        <tbody id="bn-rxt"></tbody>
+      </table>
+      <p class="hint">Modo bancada: quem responde é a Bluepill, por RF. O FS-2 deste simulador
+        não transmite nada além do que o rádio recebeu.</p>
+    </div>
     <div id="error"></div>
   </aside>
 </main>
@@ -346,6 +367,35 @@ function render(s) {
   renderTransmission(s.transmission, s.emitters.find((e) => e.name === "fs2"));
   renderPackets(s.packets, s.transmission);
   renderUplink(s.uplink);
+  renderBench(s.bench, s.uplink);
+}
+
+function clock(iso, at) {
+  return iso ? iso.slice(11, 23) : new Date(at * 1000).toISOString().slice(11, 23);
+}
+
+function renderBench(b, u) {
+  $("bench-card").hidden = !b;
+  if (!b) return;
+  const r = b.radio;
+  const st = $("bn-state");
+  if (r) {
+    st.textContent = r.online === null ? "?" : r.online ? "de pé" : "FORA";
+    st.className = "big " + (r.online ? "ok" : r.online === false ? "bad" : "");
+    $("bn-listen").textContent = r.health && r.health.listening ? r.health.listening.toUpperCase() : "–";
+    $("bn-meta").textContent = r.address + (r.last_error ? " — " + r.last_error : "")
+      + (r.health && r.health.stub ? " — rádio FALSO (bench_radio_stub)" : "");
+  } else {
+    st.textContent = "–";
+    st.className = "big";
+    $("bn-listen").textContent = "–";
+    $("bn-meta").textContent = "Sem --bench-radio: este simulador só recebe os quadros do rádio.";
+  }
+  $("bn-rx").textContent = b.rx ? b.rx.received : 0;
+  fillTable("bn-tx", u && u.mode === "bancada" ? u.recent_bursts.map((x) => [x.burst_id,
+    x.packets.join(", ") || "–", x.radio_started_at ? clock(x.radio_started_at) : "–", x.outcome]) : []);
+  fillTable("bn-rxt", b.rx ? b.rx.recent.map((x) => [clock(x.received_at, x.at), x.pkt_id || "?",
+    x.bytes, x.rssi === null || x.rssi === undefined ? "–" : x.rssi]) : []);
 }
 
 function fillTable(id, rows) {
@@ -363,6 +413,13 @@ function fillTable(id, rows) {
 }
 
 function renderUplink(u) {
+  if (u && u.mode === "bancada") {
+    $("up-off").hidden = false;
+    $("up-on").hidden = true;
+    $("up-off").textContent = `Modo bancada: a :5559 vai ao rádio do Pi (canal ${u.channel.toUpperCase()}). `
+      + `${u.bursts} rajada(s), ${u.frames_sent} quadro(s) no ar — ver "Rádio da bancada".`;
+    return;
+  }
   const on = !!(u && u.satellite);
   $("up-off").hidden = on;
   $("up-on").hidden = !on;

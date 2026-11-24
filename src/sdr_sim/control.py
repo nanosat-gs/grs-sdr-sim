@@ -53,6 +53,10 @@ class SimController:
         self.packets = None  # PacketMonitor, quando houver
         self.station_tuning = None  # StationTuningMonitor, quando houver
         self.uplink = None  # UplinkStation (o satélite ouvindo a :5559), quando houver
+        # Modo bancada (bench.py): o monitor do rádio do Pi e o receptor dos
+        # quadros que ele publica. None fora do modo bancada.
+        self.bench_monitor = None
+        self.bench_receiver = None
         # De onde o Doppler da órbita é calculado. As mesmas GS_* da estação.
         self.station = orbit.GroundStation.from_environment()
         # Trocável nos testes: é a única parte que vai à rede.
@@ -171,8 +175,17 @@ class SimController:
         state["packets"] = None if self.packets is None else self.packets.snapshot()
         state["station_tuning"] = self._station_comparison(state["emitters"])
         state["uplink"] = self._uplink_state()
+        state["bench"] = self._bench_state()
 
         return state
+
+    def _bench_state(self) -> dict | None:
+        if self.bench_monitor is None and self.bench_receiver is None:
+            return None
+        return {
+            "radio": None if self.bench_monitor is None else self.bench_monitor.snapshot(),
+            "rx": None if self.bench_receiver is None else self.bench_receiver.snapshot(),
+        }
 
     def _uplink_state(self) -> dict | None:
         fs2 = self._fs2()

@@ -73,20 +73,39 @@ def ngham_decode(after_sync: bytes) -> bytes | None:
     return bytes(payload) if payload else None
 
 
-def receive(iq: np.ndarray, sample_rate_hz: int, baud: int, rx_max_bytes: int = 0) -> list[bytes]:
-    """Os pacotes que o rádio de bordo tira de uma rajada (normalmente um)."""
+def ngham_decode_frame(after_sync: bytes) -> tuple[bytes, bytes] | None:
+    """(pacote, quadro cru): o quadro é o size tag + codeword, só os bytes que
+    o NGHam consumiu, exatamente como chegaram — com os erros que o
+    Reed-Solomon corrigiu. Comparado ao quadro recodificado, diz quantos bits
+    a recepção errou (o modo bancada registra isso)."""
+    decoder = pyngham.PyNGHam()
+    for index, byte in enumerate(after_sync):
+        payload, _, _ = decoder.decode_byte(byte)
+        if payload:
+            return bytes(payload), bytes(after_sync[:index + 1])
+    return None
+
+
+def receive_frames(iq: np.ndarray, sample_rate_hz: int, baud: int,
+                   rx_max_bytes: int = 0) -> list[tuple[bytes, bytes]]:
+    """(pacote, quadro cru) de cada quadro que o rádio de bordo tira de uma rajada."""
     if sample_rate_hz % baud:
         raise ValueError(f"{sample_rate_hz} S/s não é múltiplo de {baud} baud")
     for bits in candidate_bitstreams(iq, sample_rate_hz // baud):
-        packets = []
+        frames = []
         for start in find_syncwords(bits):
             after = np.packbits(bits[start:start + 8 * MAX_FRAME_BYTES]).tobytes()
             if rx_max_bytes:
                 # O rádio leu só isto; o resto do buffer de bordo fica zerado.
                 after = after[:rx_max_bytes].ljust(MAX_FRAME_BYTES, b"\x00")
-            packet = ngham_decode(after)
-            if packet is not None:
-                packets.append(packet)
-        if packets:
-            return packets
+            decoded = ngham_decode_frame(after)
+            if decoded is not None:
+                frames.append(decoded)
+        if frames:
+            return frames
     return []
+
+
+def receive(iq: np.ndarray, sample_rate_hz: int, baud: int, rx_max_bytes: int = 0) -> list[bytes]:
+    """Os pacotes que o rádio de bordo tira de uma rajada (normalmente um)."""
+    return [packet for packet, _ in receive_frames(iq, sample_rate_hz, baud, rx_max_bytes)]

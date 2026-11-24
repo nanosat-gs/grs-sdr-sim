@@ -137,6 +137,54 @@ Emissores disponíveis:
 | `fm` | portadora FM com uma melodia | teste de ouvido do caminho de áudio |
 | `carrier` | portadora pura, sem modulação | conferir sintonia direto no espectro |
 
+## Modo bancada: o modem do rádio da bancada RF
+
+Na etapa 1 da bancada RF do FS-2, o rádio da estação é um Raspberry Pi com um
+Si4463, e o satélite é uma Bluepill com outro Si4463. O Si4463 transmite e
+recebe bytes, não IQ. No modo bancada, este simulador roda **no Pi** e faz a
+conversão, com o mesmo código que ele já usa para fingir o satélite:
+
+```
+grs-uplink ─:5559 IQ─▶ demodula ─▶ quadro ─▶ serviço do rádio ─SPI─ Si4463 ))) Bluepill
+cadeia     ◀─:5556 IQ── modula  ◀─ quadro ◀─ serviço do rádio ◀─────────────────┘
+```
+
+- A `:5559` mantém o contrato. O `ack` só sai depois de o rádio confirmar a
+  rajada, com os horários **do rádio**. Sem confirmação, `timeout` ou `error`.
+- O `satellite.py` não responde e o FS-2 do simulador não transmite nada por
+  conta própria: o que vai ao ar na cadeia é só o que o rádio recebeu.
+- O painel ganha o cartão "Rádio da bancada": estado do rádio, canal em
+  escuta, TCs mandados e quadros recebidos com o RSSI.
+
+```bash
+# no Pi: os dois simuladores ao lado do serviço do rádio (API em 5600/5601)
+python -m sdr_sim.main --bind tcp://*:5556 -f 145900000 --fs2-frequency 145900000 --baud 1200 \
+  --tx-bind tcp://*:5559 --bench-radio tcp://127.0.0.1:5600 --bench-rx tcp://127.0.0.1:5601 \
+  --responses-channel vhf --tune-source tcp://<PC>:5575 --panel-port 8090
+python -m sdr_sim.main --bind tcp://*:5566 -f 468400000 --fs2-frequency 468400000 --baud 4800 \
+  --bench-rx tcp://127.0.0.1:5601 --responses-channel uhf --tune-source tcp://<PC>:5576 --panel-port 8093
+
+# sem RF e sem o firmware da Bluepill: o rádio falso responde com o satellite.py
+python -m sdr_sim.bench_radio_stub --keys-file keys.test.json --beacon-period 30
+```
+
+**A API do serviço do rádio** (o contrato completo está em `bench.py`):
+
+| | |
+|---|---|
+| REQ/REP `:5600` | `{"op": "tx", "channel", "frame_hex"}` → `{ok, started_at, ended_at}` ou `{ok: false, error}`; `{"op": "health"}` |
+| PUB `:5601` | `[b"vhf"\|b"uhf", quadro, {"rssi", "received_at"}]` |
+
+O quadro é o size tag + codeword do NGHam: o que o Si4463 escreve depois do
+syncword. O `bench_radio_stub` aceita também `{"op": "sat", "fail_next": -2}`,
+`{"op": "sat", "drop_next": true}` e `{"op": "beacon"}`.
+
+**O gateway** (`python -m sdr_sim.gateway`) roda na estação, com o nome e o IP
+fixo do rádio (`grs-iq-rx`, `grs-iq-rx-uhf`). Ele repassa o IQ do Pi à cadeia
+e a `:5559` ao Pi, e republica o `tune` do sintetizador numa porta do host
+para o Pi assinar. Sem IQ do Pi há mais de 3 s, a `:5559` responde `error`
+na hora, com o motivo.
+
 ## A modulação é independente de propósito
 
 Este repositório **não** usa o DSP do `grs-demodulator`. Poderia — a classe
