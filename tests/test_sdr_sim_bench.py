@@ -439,3 +439,36 @@ def test_modo_bancada_recusa_opções_do_satélite_simulado():
     args = main.parse_args(["--tx-bind", "tcp://*:5559", "--bench-radio", "tcp://pi:5600",
                             "--bench-rx", "tcp://pi:5601", "--responses-channel", "vhf"])
     assert args.bench and args.responses_channel == "vhf"
+
+
+def test_gateway_sem_host_do_pi_explica_o_que_falta(capsys):
+    with pytest.raises(SystemExit):
+        gateway.main(["--iq-source", "tcp://:5556"])
+    assert "BANCADA_PI_HOST" in capsys.readouterr().err
+
+
+def test_gateway_republica_o_tune_para_o_pi_assinar():
+    context = zmq.Context.instance()
+    synth, out = free_port(), free_port()
+    pub = context.socket(zmq.PUB)
+    pub.bind(f"tcp://127.0.0.1:{synth}")
+    shutdown = threading.Event()
+    relay = gateway.TuneRelay(f"tcp://127.0.0.1:{synth}", f"tcp://127.0.0.1:{out}", shutdown, context)
+    relay.start()
+    pi = context.socket(zmq.SUB)
+    pi.setsockopt(zmq.SUBSCRIBE, b"tune")
+    pi.connect(f"tcp://127.0.0.1:{out}")
+    try:
+        got = None
+        deadline = time.time() + 5
+        while got is None and time.time() < deadline:
+            pub.send_multipart([b"tune", b"145903210"])
+            if pi.poll(200):
+                got = pi.recv_multipart()
+        # O mesmo envelope que o TuneListener do simulador espera.
+        assert got == [b"tune", b"145903210"]
+    finally:
+        shutdown.set()
+        relay.join(timeout=2)
+        pub.close(linger=0)
+        pi.close(linger=0)

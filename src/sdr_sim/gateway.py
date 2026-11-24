@@ -191,6 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if bool(args.tune_source) != bool(args.tune_bind):
         parser.error("--tune-source e --tune-bind andam juntos")
+    for address in (args.iq_source, args.tx_target):
+        if address and address.startswith("tcp://:"):
+            # O compose monta o endereço com ${BANCADA_PI_HOST:-}: vazio, sai isto.
+            parser.error(f"endereço do Pi sem host ({address}): defina BANCADA_PI_HOST no .env")
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
