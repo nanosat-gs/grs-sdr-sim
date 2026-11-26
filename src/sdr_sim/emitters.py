@@ -73,9 +73,14 @@ def build_frame(payload: bytes, preamble_bytes: int = 32) -> np.ndarray:
     """Preâmbulo + syncword + payload, como fluxo de bits.
 
     O preâmbulo é 0xAA — alternado a cada bit. Não é enfeite: é o que dá ao
-    sincronismo de tempo do receptor transições suficientes para travar ANTES
-    de o syncword passar. Sem ele, o Mueller & Muller ainda está convergindo
-    quando o syncword chega, e o detector não acha nada.
+    sincronismo de tempo do receptor transições para travar ANTES de o
+    syncword passar.
+
+    O FS-2 manda 4 bytes (o Si4463 do TTC 2.0; `bench.PREAMBLE_BYTES`). O
+    padrão de 32 é folga do simulador, e escondeu por meses que o M&M do
+    `grs-demodulator` não travava no preâmbulo (o erro dele é zero num
+    `1010...`): com 256 símbolos sobrava tempo de convergir por sorte. O modo
+    bancada usa 4.
     """
     return bytes_to_bits(bytes([NGHAM_PREAMBLE] * preamble_bytes) + NGHAM_SYNCWORD + payload)
 
@@ -281,13 +286,17 @@ def fs2_beacon(
     amplitude: float = 1.0,
     doppler: PassDoppler | None = None,
     payload_source: Callable[[], bytes] | None = None,
+    preamble_bytes: int = 32,
 ) -> Emitter:
     """Rajadas 2GFSK com enquadramento NGHam, como o downlink do FS-2.
 
     `payload`: o mesmo em toda rajada. `payload_source`: chamado a cada
     rajada, um payload novo por vez (fs2_frames.GeneralTelemetryStream) —
-    `payload` então só serve à primeira forma de onda.
+    `payload` então só serve à primeira forma de onda. `preamble_bytes`: ver
+    `build_frame`; o FS-2 de verdade manda 4.
     """
+    if preamble_bytes < 0:
+        raise ValueError(f"preâmbulo negativo: {preamble_bytes} bytes")
     if sample_rate_hz % baud != 0:
         raise ValueError(
             f"{sample_rate_hz} S/s não é múltiplo de {baud} baud; o resto vira erro de fase"
@@ -297,7 +306,7 @@ def fs2_beacon(
 
     def cycle(data: bytes) -> np.ndarray:
         burst = modulation.modulate_2gfsk(
-            build_frame(data), samples_per_symbol=sample_rate_hz // baud, bt=bt
+            build_frame(data, preamble_bytes), samples_per_symbol=sample_rate_hz // baud, bt=bt
         )
         return np.concatenate((burst, silence))
 

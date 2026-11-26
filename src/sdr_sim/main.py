@@ -214,6 +214,7 @@ def build_spectrum(args: argparse.Namespace) -> VirtualSpectrum:
             gap_s=args.burst_gap,
             doppler=doppler,
             payload_source=payload_source,
+            preamble_bytes=args.preamble_bytes,
         ),
         emitters_mod.fm_station(
             frequency_hz=args.fm_frequency,
@@ -371,6 +372,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "variando.")
     parser.add_argument("--burst-gap", type=float, default=0.5,
                         help="Silêncio entre rajadas, em segundos")
+    parser.add_argument("--preamble-bytes", type=int, default=None,
+                        help="Bytes de preâmbulo 0xAA antes do syncword. Omitido = 4 no modo "
+                             "bancada (o que o Si4463 do FS-2 transmite) e 32 fora dele.")
     parser.add_argument("--fs2-mode", choices=["continuous", "manual"], default="continuous",
                         help="continuous: rajadas sem parar. manual: silêncio até o painel "
                              "pedir um pacote (POST /api/control {\"send_packets\": 1}).")
@@ -460,6 +464,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(f"emissor desconhecido: {', '.join(sorted(unknown))}")
 
     args.bench = bool(args.bench_radio or args.bench_rx)
+    if args.preamble_bytes is None:
+        # O mesmo número que o Si4463 da bancada põe no ar: a estação tem de
+        # ver o preâmbulo curto do satélite, não a folga do simulador. Fora do
+        # modo bancada continua 32, como sempre foi.
+        if args.bench:
+            from sdr_sim.bench import PREAMBLE_BYTES
+
+            args.preamble_bytes = PREAMBLE_BYTES
+        else:
+            args.preamble_bytes = 32
+    if args.preamble_bytes < 0:
+        parser.error("--preamble-bytes não pode ser negativo")
     if args.bench:
         if args.responses_channel not in ("vhf", "uhf"):
             parser.error("modo bancada: --responses-channel precisa ser vhf ou uhf")

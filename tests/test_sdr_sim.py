@@ -294,6 +294,23 @@ def test_duracao_de_passagem_invalida_e_recusada():
 # --- validação de cenário ---------------------------------------------------
 
 
+def test_rajada_com_o_preambulo_do_fs2():
+    """4 bytes, como o Si4463 do TTC 2.0: 28 bytes (224 símbolos) a menos
+    no ar que o padrão de 32, e o resto da rajada igual."""
+    sps = SAMPLE_RATE // BAUD
+    longo = em.fs2_beacon(145e6, SAMPLE_RATE, BAUD, b"\x01\x02", gap_s=0.01)
+    curto = em.fs2_beacon(145e6, SAMPLE_RATE, BAUD, b"\x01\x02", gap_s=0.01, preamble_bytes=4)
+
+    assert len(longo.waveform) - len(curto.waveform) == 28 * 8 * sps
+    # o que vai para a fila de respostas usa o mesmo preâmbulo
+    assert len(curto.waveform_for(b"\x01\x02")) == len(curto.waveform)
+
+
+def test_preambulo_negativo_e_recusado():
+    with pytest.raises(ValueError, match="preâmbulo"):
+        em.fs2_beacon(145e6, SAMPLE_RATE, BAUD, b"\x00", preamble_bytes=-1)
+
+
 def test_taxa_que_nao_divide_o_baud_e_recusada():
     """O resto viraria erro de fase acumulado ao longo da rajada."""
     with pytest.raises(ValueError, match="múltiplo"):

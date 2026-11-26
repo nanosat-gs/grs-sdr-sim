@@ -155,6 +155,11 @@ cadeia     ◀─:5556 IQ── modula  ◀─ quadro ◀─ serviço do rádio 
   conta própria: o que vai ao ar na cadeia é só o que o rádio recebeu.
 - O painel ganha o cartão "Rádio da bancada": estado do rádio, canal em
   escuta, TCs mandados e quadros recebidos com o RSSI.
+- O quadro recebido é remodulado com **4 bytes de preâmbulo**, como o Si4463
+  do FS-2 transmite, e não com os 32 de folga do simulador
+  (`--preamble-bytes` muda). Com 32, o sincronismo de tempo da estação tinha
+  256 símbolos para travar e a bancada escondia uma perda de quadros que o
+  satélite de verdade teria.
 
 ```bash
 # no Pi: os dois simuladores ao lado do serviço do rádio (API em 5600/5601)

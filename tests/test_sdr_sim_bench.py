@@ -441,6 +441,19 @@ def test_modo_bancada_recusa_opções_do_satélite_simulado():
     assert args.bench and args.responses_channel == "vhf"
 
 
+def test_modo_bancada_modula_com_o_preambulo_do_si4463():
+    """A estação tem de ver os 4 bytes de preâmbulo que a Bluepill transmite,
+    não os 32 de folga do simulador: com 32, o M&M cego no preâmbulo passava
+    na bancada e perdia quadros do satélite de verdade."""
+    bancada = main.parse_args(["--bench-rx", "tcp://pi:5601", "--responses-channel", "uhf"])
+    assert bancada.preamble_bytes == bench.PREAMBLE_BYTES == 4
+    assert main.parse_args([]).preamble_bytes == 32
+    explicito = main.parse_args(["--bench-rx", "tcp://pi:5601", "--preamble-bytes", "8"])
+    assert explicito.preamble_bytes == 8
+    with pytest.raises(SystemExit):
+        main.parse_args(["--preamble-bytes", "-1"])
+
+
 def test_gateway_sem_host_do_pi_explica_o_que_falta(capsys):
     with pytest.raises(SystemExit):
         gateway.main(["--iq-source", "tcp://:5556"])
